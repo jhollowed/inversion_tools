@@ -9,8 +9,8 @@
 
 # =========================================================================
 
-#from .sph_zonal_mean import sph_zonal_averager
-#from .tem_diagnostics import TEMDiagnostics
+from .utils import *
+from .data_io import *
 
 # define attributes
 __version__ = '0.1'
