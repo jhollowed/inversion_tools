@@ -7,8 +7,12 @@
 # =========================================================================
 
 # ---- import dependencies
+import os
 import pdb
+import glob
+import timeit
 import numpy as np
+import pandas as pd
 import xarray as xr
 from timeit import default_timer
 
@@ -25,7 +29,7 @@ gc_transport_dir = f'{forward_dir}/3a_transport_gc/intermediates/runs-control'
 
 # -------------------------------------------------------------------------
 
-def get_mf_and_flux_for_split(source, lev, split, rechunk=True, datadir=None,
+def get_mf_and_flux_for_split(source, lev, split, rechunk=True, processing_dir=None,
                               lat=None, lon=None, pft=None, substr=None, resample='1D', 
                               return_flux=True, return_mf=True, quiet=False):
     '''
@@ -45,7 +49,7 @@ def get_mf_and_flux_for_split(source, lev, split, rechunk=True, datadir=None,
         Defaults to True, in which case disk space will be used by intermediate processed
         data files (unless they already exist). Data is re-chunked in the time dimension 
         only, into 30-day chunks.
-    datadir : str, optional
+    processing_dir : str, optional
         path to location at which to write out processed (rechunked) data, if rechunk=True
     lat : float, optional
         latitude to extract data across time
@@ -71,6 +75,32 @@ def get_mf_and_flux_for_split(source, lev, split, rechunk=True, datadir=None,
     elif(source == 'ocean'): 
         source = 'ocean_lschulz'
         pfx, sfx = '', ''
+
+    # if a pft was not specified, but the source is gpp or resp, then call this 
+    # function recursively for each pft, summing the result for final return
+    if(sfx == 'allpft'):
+        for i in range(15):
+            print(f'\n\n========== PFT {i+1}/15 ==========')
+            args = {'source':source, 'lev':lev, 'split':split,
+                    'rechunk':rechunk, 'processing_dir':processing_dir, 'lat':lat,
+                    'lon':lon, 'pft':i+1, 'substr':'substr', 'resample':resample,
+                    'return_flux':return_flux, 'return_mf':return_mf, 'quiet':quiet}
+            if(i==0):
+                comp_data = get_mf_and_flux_for_split(**args)
+                if(return_flux and return_mf): 
+                    comp_mf_data, comp_flux_data = comp_data[0], comp_data[1]
+            else:
+                comp_datai= get_mf_and_flux_for_split(**args)
+                if(return_flux and return_mf):
+                    comp_mf_data   += comp_datai[0]
+                    comp_flux_data += comp_datai[1]
+                else:
+                    comp_data += comp_datai
+            
+            if(return_flux and return_mf): return comp_mf_data, comp_flux_data
+            elif(return_flux):             return comp_data
+            elif(rturn_mf):                return comp_data
+
 
     # get mapping file
     mapping = pd.read_csv(f'{gc_transport_dir}/mapping.csv')
@@ -121,12 +151,11 @@ def get_mf_and_flux_for_split(source, lev, split, rechunk=True, datadir=None,
                     # if necessary
                     rechunked_fname = data_files[j].split('/')[-1].split('.nc')[0] + \
                                       varname + f'lev{lev}' + '.nc'
-                    rechunked_fname = datair + rechunked_fname
+                    rechunked_fname = processing_dir + rechunked_fname
                     if(not os.path.exists(rechunked_fname)):
-                        utils.rechunk_dataset(data_files[j], oufile=rechunked_fname, 
-                                              isel={'lev':lev-1}, var=varname)
-                    data_1hr = xr.open_dataset(rechunked_fname, {'time':hours_per_month}, 
-                                               isel={'lev':lev-1})
+                        rechunk_dataset(data_files[j], var=varname, outfile=rechunked_fname, 
+                                chunking={'time':hours_per_month}, isel={'lev':lev-1})
+                    data_1hr = xr.open_dataset(rechunked_fname)
                 else:
                     data_1hr = xr.open_dataset(data_files[j])[varname]
                     data_1hr = data_1hr.isel(lev=lev-1)
@@ -178,12 +207,11 @@ def get_mf_and_flux_for_split(source, lev, split, rechunk=True, datadir=None,
                     # if necessary
                     rechunked_fname = data_files[j].split('/')[-1].split('.nc')[0] + \
                                       varname + f'lev{lev}' + '.nc'
-                    rechunked_fname = datadir + rechunked_fname
+                    rechunked_fname = processing_dir + rechunked_fname
                     if(not os.path.exists(rechunked_fname)):
-                        utils.rechunk_dataset(data_files[j], oufile=rechunked_fname, 
-                                              isel={'lev':lev-1}, var=varname)
-                    data_3hr = xr.open_dataset(rechunked_fname, {'time':hours_per_month/3}, 
-                                               isel={'lev':lev-1})
+                        rechunk_dataset(data_files[j], var=varname, outfile=rechunked_fname, 
+                                chunking={'time':hoursper_month/3}, isel={'lev':lev-1})
+                    data_3hr = xr.open_dataset(rechunked_fname)
                 else:
                     data_3hr = xr.open_dataset(data_files[j])[varname]
                     data_3hr = data_3hr.isel(lev=lev-1)

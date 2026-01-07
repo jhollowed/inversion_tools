@@ -6,8 +6,11 @@
 
 # =========================================================================
     
+import os
 import pdb
+import glob
 import numpy as np
+import pandas as pd
 import xarray as xr
 from timeit import default_timer
 
@@ -49,8 +52,8 @@ def lev_to_z(lev):
 
 # -------------------------------------------------------------------------
 
-def rechunk_dataset(dset, outfile, chunking={'time':24},
-                    var=None, sel=None, isel=None, quiet=False):
+def rechunk_dataset(dset, var, outfile, chunking={'time':24},
+                    sel=None, isel=None, quiet=False):
     '''
     Rechunks a netCDF file for specified dimensions and chunk sizes, and writes out the
     result to a new netCDF file.
@@ -59,15 +62,14 @@ def rechunk_dataset(dset, outfile, chunking={'time':24},
     ----------
     dset : xarray Dataset or DataArray
         the input dataset
+    var : str
+        variable to extract from the dataset before processing.
     outfile : str
         output file name
     chunking : dict
         dictionary providing the dimension name-chunk size pairs. Default is {'time':24}, 
         ehich will cause data to be rechunked in the time dimension with a chunk size of
         24. This will create daily chunks for hourly input data
-    var : str, optional
-        variable(s) to extract from the dataset before processing. Default is None, 
-        in which case the entire dataset will be processed.
     sel : dict
         argument to pass to the sel arg of xr.open_dataset. Default is None, in which
         case no argument is passed
@@ -78,17 +80,18 @@ def rechunk_dataset(dset, outfile, chunking={'time':24},
         whether or not to suppress print statements from this function
     '''
 
-    data = xr.open_dataset(dset, sel-sel, isel=sel)[var]
+    data = xr.open_dataset(dset)[var]
+    if(sel is not None): data = data.sel(sel)
+    if(isel is not None): data = data.isel(isel)
 
     encoding = {}
-    for name, var in ds.data_vars.items():
-        chunks = []
-        for dim in var.dims:
-            if dim in list(chunking.keys()):
-                chunks.appens(chunking[dim])
-            else:
-                chunks.append(var.sizes[dim])
-        encoding[name] = {'zlib':True, 'cmoplevel':1, chunksizes:tuple(chunks)}
+    chunks = []
+    for dim in data.dims:
+        if dim in list(chunking.keys()):
+            chunks.append(chunking[dim])
+        else:
+            chunks.append(data.sizes[dim])
+    encoding[data.name] = {'zlib':True, 'complevel':1, 'chunksizes':tuple(chunks)}
   
     fname = outfile.split('/')[-1]
     print(f'writing out rechunked data to {fname}')
