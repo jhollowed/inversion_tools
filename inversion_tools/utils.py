@@ -51,6 +51,30 @@ def lev_to_p(lev):
 # -------------------------------------------------------------------------
 
 
+def p_to_lev(p):
+    '''
+    Converts pressure in hPa to level index
+
+    Parameters
+    ----------
+    p : float
+        pressure in hPa
+
+    Returns
+    -------
+    The level index
+    '''
+    df = pd.read_fwf(f'{here}/../data/levels47.csv',skiprows=3,
+                     names=["L", "eta_edge", "eta_mid", "alt_km", "p_hpa"])
+    # keep only midpoint rows
+    mid = df[df["eta_mid"].notna()].reset_index(drop=True)
+    # get pressure
+    return float(mid.loc[np.isclose(mid["p_hpa"], p, rtol=0.013), "L"].iloc[0])
+
+
+# -------------------------------------------------------------------------
+
+
 def lev_to_z(lev):
     '''
     Converts level index to altitude in km
@@ -147,7 +171,7 @@ def column_average(mf, outfile=None, overwrite=False):
     Parameters
     ----------
     mf : xarray DataArray
-        input concentration in kg/kg. Must have a vertical dimension 'lev', which must be 
+        input concentration in kg/kg. Must have a vertical dimension 'lev' 
     outfile : str
         path to file at which to save the result. If file already exists, then read from 
         the file instead of computing the column average from scratch.
@@ -179,6 +203,61 @@ def column_average(mf, outfile=None, overwrite=False):
     if(outfile is not None):
         X.to_netcdf(outfile)
     return X
+
+
+# -------------------------------------------------------------------------
+
+
+def column_center_of_mass(mf, outfile=None, overwrite=False):
+    '''
+    Computes the pressure-weighted vertical center of mass (km)
+    of a tracer defined on pressure levels, assuming hydrostatic balance
+
+    Parameters
+    ----------
+    mf : xarray DataArray
+        input concentration in kg/kg. Must have a vertical dimension 'lev' 
+    outfile : str
+        path to file at which to save the result. If file already exists, then read from 
+        the file instead of computing the column average from scratch.
+    overwrite : bool
+        whether or not to overwrite the file specified at outfile, if exists
+
+    Returns
+    -------
+    xarray DataArray of center-of-mass altitude (km)
+    '''
+    
+    varname = f'{mf.name}_vertical_com'
+    try:
+        if overwrite:
+            raise FileNotFoundError
+        return xr.open_dataset(outfile)[varname]
+    except FileNotFoundError:
+        pass
+
+    # --- pressure thickness (same as column_average)
+    p  = mf.lev.values
+    dp = np.array([np.diff(p_to_p_interfaces(pi)) for pi in p])
+
+    dim_idx = np.where(np.array(mf.dims) == 'lev')[0][0]
+    shape          = np.ones(mf.ndim)
+    shape[dim_idx] = mf.shape[dim_idx]
+    dp = dp.reshape(shape.astype(int))
+
+    # --- get altitude for each level
+    z = np.array([lev_to_z(p_to_lev(pi*1000)) for pi in p])
+    shape_z          = np.ones(mf.ndim)
+    shape_z[dim_idx] = len(z)
+    z = z.reshape(shape_z.astype(int))
+
+    # --- compute center of mass
+    z_com      = (mf * z * dp).sum('lev') / (mf * dp).sum('lev')
+    z_com.name = varname
+
+    if outfile is not None:
+        z_com.to_netcdf(outfile)
+    return z_com
 
 
 # -------------------------------------------------------------------------

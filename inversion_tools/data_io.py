@@ -124,19 +124,27 @@ def read_transport_jacobians_residual(source, start_date, end_date, region, mont
         a year-month pair in the format 'YYYY-MM', specifying a tracer species by emission time.
     '''
     
-    start_split = find_split_containing_date(start_date, 'residual')
-    end_split   = find_split_containing_date(end_date, 'residual')
-    splits = np.arange(start_split, end_split)
+    splits      = np.arange(1, 30)
     print(f'reading data for splits {splits}')
 
     data = [0] * len(splits)
     for i,split in enumerate(splits):
         print(f'---------- split {split} ----------')
-        data[i] = _get_mf_and_flux_for_split(source, split=split, region=region, month=month, 
-                                          lev=lev, lat=lat, lon=lon, pft=pft, 
-                                          rechunk=rechunk, processing_dir=processing_dir, substr=substr, 
-                                          resample=resample, return_flux=return_flux, return_mf=return_mf, 
-                                          quiet=quiet)
+        try:
+            data[i] = _get_mf_and_flux_for_split(source, split=split, region=region, month=month, 
+                                                 lev=lev, lat=lat, lon=lon, pft=pft, 
+                                                 rechunk=rechunk, processing_dir=processing_dir, 
+                                                 substr=substr, resample=resample, 
+                                                 return_flux=return_flux, 
+                                                 return_mf=return_mf, quiet=quiet, 
+                                                 start_date=np.datetime64(start_date), 
+                                                 end_date=np.datetime64(end_date))
+        except ValueError:
+            print(f'could not read split {split}; skipping')
+
+    # remove entries for data that could not be read
+    data = [d for d in data if d != 0]
+
     if return_flux and return_mf:
         return xr.concat(data.T[0], dim='time'), xr.concat(data.T[1], dim='time')
     else:
@@ -150,7 +158,8 @@ def read_transport_jacobians_residual(source, start_date, end_date, region, mont
 def _get_mf_and_flux_for_split(source, split, 
                               lev=None, lat=None, lon=None, pft=None, region=None, month=None, 
                               rechunk=True, processing_dir=None, substr=None, resample='1D', 
-                              return_flux=True, return_mf=True, quiet=False):
+                              return_flux=True, return_mf=True, quiet=False, 
+                              start_date=None, end_date=None):
     '''
     Reads, resamples, and returns mole fraction and flux data for a chosen emission source, 
     either globally, for a single latitude, a single longitude, or a single lat/lon position
@@ -198,6 +207,14 @@ def _get_mf_and_flux_for_split(source, split,
         whether or not to read and return mole fraction data
     quiet : bool, optional
         whether or not to silence progress print statements
+    start_date : str, optional
+        start date to filter on. If the specified split is not within the range [start_date, end_date], 
+        then return no output. Defaults to None, in which case no date filtering is applied, and the 
+        specified split is returned
+    end_date : str, optional
+        end date to filter on. If the specified split is not within the range [start_date, end_date], 
+        then return no output. Defaults to None, in which case no date filtering is applied, and the 
+        specified split is returned
 
     Returns
     -------
@@ -302,7 +319,7 @@ def _get_mf_and_flux_for_split(source, split,
     # prepare settings for reading either flux or mole fraction
     # TODO: this should obviously be a class...
     read_args = [source, split, lev, lat, lon, region, month, comp_labels, comp_runs, comp_species,\
-                 rechunk, resample, substr, top_dir, quiet, processing_dir]
+                 rechunk, resample, substr, top_dir, quiet, processing_dir, start_date, end_date]
     if(return_mf):
         comp_mf_data   = _read_data('mole fraction', *read_args)
     if(return_flux):
@@ -314,8 +331,8 @@ def _get_mf_and_flux_for_split(source, split,
     print('done')
 
     # ------ format return dicts as xr Datasets
-    if(return_mf):   comp_mf_data   = xr.Dataset(comp_mf_data)
-    if(return_flux): comp_flux_data = xr.Dataset(comp_flux_data)
+    if(return_mf and comp_mf_data != 0):     comp_mf_data   = xr.Dataset(comp_mf_data)
+    if(return_flux and comp_flux_data != 0): comp_flux_data = xr.Dataset(comp_flux_data)
 
     # ------ done; return
     if(return_flux and return_mf): return comp_mf_data, comp_flux_data
@@ -329,7 +346,8 @@ def _get_mf_and_flux_for_split(source, split,
 
 def _read_data(data_class, source, split, lev, lat, lon, region, month, 
                comp_labels, comp_runs, comp_species, 
-               rechunk, resample, substr, top_dir, quiet, processing_dir):
+               rechunk, resample, substr, top_dir, quiet, processing_dir, 
+               start_date, end_date):
     '''
     Reads flux or mole fraction data for specified options. All arguments not detailed below are expected
     to be the same as those from get_mf_and_flux_for_split
@@ -385,7 +403,23 @@ def _read_data(data_class, source, split, lev, lat, lon, region, month,
         N    = len(data_files)
         data = [0]*N
         for j in range(N):
+
+            # if redo is true, decrement j and work on previous file again
             if(redo): j-=1
+            
+            # for the first file, check if this split is in the date range
+            if(j==0 and start_date is not None and end_date is not None):
+                header     = xr.open_dataset(data_files[j], decode_times=False)
+                file_start = np.datetime64(header.simulation_start_date_and_time.split()[0])
+                file_end   = np.datetime64(header.simulation_end_date_and_time.split()[0])
+                if(not quiet):
+                    print(f'split start: {file_start}, split end: {file_end}')
+                if(file_end < start_date or file_start > end_date):
+                    if(not quiet):
+                        print(f'split {split} out of date range; skipping')
+                    return 0
+
+            # begin processing file
             if(not quiet):
                 print(f'reading {source} {data_class} {comp} file {j+1}/{N}...'+''.join([' ']*30))
 
@@ -423,7 +457,6 @@ def _read_data(data_class, source, split, lev, lat, lon, region, month,
                 if(lev is not None):
                     data[j] = data[j].isel(lev=lev-1)
 
-         
             # select for lat, lon if specified
             if(lat is not None):
                 data[j] = data[j].sel(lat=lat, method='nearest')
