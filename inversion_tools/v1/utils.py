@@ -261,3 +261,145 @@ def column_center_of_mass(mf, outfile=None, overwrite=False):
 
 
 # -------------------------------------------------------------------------
+
+
+def rechunk_dataset(dset, var, outfile, chunking={'time':24},
+                    sel=None, isel=None):
+    '''
+    Rechunks a netCDF file for specified dimensions and chunk sizes, and writes out the
+    result to a new netCDF file.
+
+    Parameters
+    ----------
+    dset : xarray Dataset or DataArray
+        the input dataset
+    var : str
+        variable to extract from the dataset before processing.
+    outfile : str
+        output file name
+    chunking : dict
+        dictionary providing the dimension name-chunk size pairs. Default is {'time':24}, 
+        ehich will cause data to be rechunked in the time dimension with a chunk size of
+        24. This will create daily chunks for hourly input data
+    sel : dict
+        argument to pass to the sel arg of xr.open_dataset. Default is None, in which
+        case no argument is passed
+    isel : dict
+        argument to pass to the isel arg of xr.open_dataset. Default is None, in which
+        case no argument is passed
+    '''
+
+    data = xr.open_dataset(dset)[var]
+    if(sel is not None): data = data.sel(sel)
+    if(isel is not None): data = data.isel(isel)
+
+    encoding = {}
+    chunks = []
+    for dim in data.dims:
+        if dim in list(chunking.keys()):
+            chunks.append(min(chunking[dim], data.sizes[dim]))
+        else:
+            chunks.append(data.sizes[dim])
+    encoding[data.name] = {'zlib':True, 'complevel':1, 'chunksizes':tuple(chunks)}
+ 
+    fname = outfile.split('/')[-1]
+    data.to_netcdf(outfile, format='NETCDF4', encoding=encoding)
+
+
+# -------------------------------------------------------------------------
+
+
+def find_split_containing_date(date, kind, debug=False):
+    '''
+    Finds the split which contains the input date
+
+    Parameters
+    ----------
+    date : str
+        the date, in 'YYYY-MM-DD' format
+    kind : str
+        the kind of dataset to use for searching the split information. Can be either
+        'control, 'climatology', or 'residual'. The latter two refer to the non-control
+        runs.
+    debug : bool, optional
+        flag to turn on verbose output for debugging
+
+    Returns
+    -------
+    the split containing the input date, as an integer
+    '''
+    date = datetime.strptime(date, '%Y-%m-%d').date()
+    mapping = _get_split_date_mapping(control=(kind =='control'))
+
+    for i in range(len(mapping)):
+        if(mapping[i][0] != kind): continue
+        start = datetime.strptime(mapping[i][2], '%Y-%m-%d').date()
+        end   = datetime.strptime(mapping[i][3], '%Y-%m-%d').date()
+        if(debug): print(f'{start} <= {date} <= {end } = {start <= date <= end}')
+        if start <= date < end:
+            return int(mapping[i][1])
+
+    start, end = mapping[0][2], mapping[-1][3]
+    raise RuntimeError(f'No split found containing date {date} for kind={kind}! '\
+                       f'Valid dates range from {start} to {end}')
+
+
+# -------------------------------------------------------------------------
+
+
+def _get_split_date_mapping(control=False, overwrite=False):
+    '''
+    Builds a mapping between split integer and left,right bounding dates, and saves
+    the result to file.
+
+    Parameters
+    ----------
+    control : bool, optional
+        whether or not to build the mapping for the control runs. If False, then build the mapping
+        for the climatological and residual non-control runs
+    overwrite : bool, optional
+        whether or not toverwrite existing mapping files. If False (the default), then the mapping
+        on-file is read and returned if existing
+    '''
+    
+    if control:
+        top_dir   = gc_transport_control_dir
+        mapping_file = f'{here}/../data/split_mapping_control.csv'
+        kinds     = ['control']
+    else:       
+        top_dir  = gc_transport_dir 
+        mapping_file = f'{here}/../data/split_mapping.csv'
+        kinds    = ['climatology', 'residual']
+        
+    # read file if exists; generate if not
+    try:
+        if(overwrite): raise FileNotFoundError
+        mapping = np.loadtxt(mapping_file, delimiter=',', skiprows=1, dtype=str)
+    except FileNotFoundError:
+        print('split-date mapping file not found; generating')
+        # define table header
+        mapping = [['kind', 'split', 'left_date', 'right_date']]
+        for kind in kinds:
+
+            # extract the splits from the name of each subdir at the data location
+            split_dirs = sorted(glob.glob(f'{top_dir}/{kind}*part001**split[0-9][0-9]'))
+            splits   = [int(sdir.split('_split')[-1]) for sdir in split_dirs]
+            
+            # take only the first instance of each split (assume that a unique split integer
+            # corresponds to a unique time period, for this choice of 'kind')
+            mask       = np.sort(np.unique(splits, return_index=True)[1])
+            split_dirs = np.array(split_dirs)[mask]
+            splits     = np.array(splits)[mask]
+
+            for i,split in enumerate(splits):
+                all_data = sorted(glob.glob(f'{split_dirs[i]}/OutputDir/GEOSChem.Species*.nc4'))
+                left  = xr.open_dataset(all_data[0]).attrs['simulation_start_date_and_time']
+                left  = left.split()[0].strip('-')
+                right = xr.open_dataset(all_data[-1]).attrs['simulation_end_date_and_time']
+                right = right.split()[0].strip('-')
+                mapping.append([kind, int(split), left, right])
+
+        np.savetxt(mapping_file, np.array(mapping), delimiter=',', fmt='%s')
+        mapping = np.loadtxt(mapping_file, delimiter=',', skiprows=1, dtype=str)
+        print(f'done; saved mapping file to {mapping_file}')
+    return mapping

@@ -6,7 +6,7 @@
 from setuptools import setup
 
 setup(name='inversion_tools',
-      version='0.1',
+      version='0.2',
       description='Package providing convenience functions for anaylzing flux inversion datasets',
       url='https://github.com/jhollowed/inversion_tools',
       author='Joe Hollowed',

@@ -1,0 +1,1 @@
+This diretory contains the original version of the code, which reads 3-hourly GEOSChem data. It has been superceded by the python files of the same names in the directory above, which are designed to work with Mike Bertolacci's processed daily version of that 3-hourly data.
