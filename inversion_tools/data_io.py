@@ -23,548 +23,318 @@ from .constants import *
 
 # -------------------------------------------------------------------------
 
-def read_transport_jacobians_control(source, start_date, end_date, 
-                                     lev=None, lat=None, lon=None, pft=None,
-                                     rechunk=True, processing_dir=None, substr=None, resample='1D', 
-                                     return_flux=True, return_mf=True, quiet=False):
+class Reader:
     '''
-    Reads, resamples, and returns mole fraction and flux data for a chosen emission source, 
-    either globally, for a single latitude, a single longitude, or a single lat/lon position.
-    For all arguments not described here, see the docstring of _get_mf_and_flux_for_split()
+    Interface for reading transport forward run mole fractions and fluxes
 
     Parameters
     ----------
     source : str
-        either 'ocean', 'gpp', or 'resp'
-    start_date : str
-        start of time period over which to read the data, in the format 'YYYY-MM-DD'
-    end_date : str
-        end of time period over which to read the data, in the format 'YYYY-MM-DD'
-    
-    Returns
-    -------
-    If both return_flux and return_mf, a tuple like (mole fraction data, flux data)
-    Else, a single return of either the mole fraction or flux data
-    In either case, data formats are dictionaries of xarray DataArrays, with the dictionary
-    keys giving the WOMBAT components
-    '''
-
-    start_split = find_split_containing_date(start_date, 'control')
-    end_split   = find_split_containing_date(end_date, 'control')
-    splits = np.arange(start_split, end_split)
-    print(f'reading data for splits {splits}')
-    
-    data = [0] * len(splits)
-    for i,split in enumerate(splits):
-        print(f'---------- split {split} ----------')
-        data[i] = _get_mf_and_flux_for_split(source, split=split, lev=lev, lat=lat, lon=lon, pft=pft, 
-                                             rechunk=rechunk, processing_dir=processing_dir, 
-                                             substr=substr, resample=resample, return_flux=return_flux, 
-                                             return_mf=return_mf, quiet=quiet)
-    if return_flux and return_mf:
-        return xr.concat(data.T[0], dim='time'), xr.concat(data.T[1], dim='time')
-    else:
-        return xr.concat(data, dim='time')
-
-
-# -------------------------------------------------------------------------
-# -------------------------------------------------------------------------
-
-
-def read_transport_jacobians_climo(source, start_date, end_date, region,
-                                   component=None, lev=None, lat=None, lon=None, pft=None,
-                                   rechunk=True, processing_dir=None, substr=None, 
-                                   resample='1D', return_flux=True, return_mf=True, 
-                                   quiet=False):
-    '''
-    Reads, temporally resamples, and returns mole fraction and/or flux data for a chosen 
-    emission source at specified position, or globally. For all arguments not described below, 
-    see the docstring of read_transport_jacobians_control()
-
-    Parameters
-    ----------
-    region : int, optional
-        an integer from 0 to 22 giving the emission region
-    '''
-    
-    #start_split = find_split_containing_date(start_date, 'climatology')
-    #end_split   = find_split_containing_date(end_date, 'climatology')
-    #splits = np.arange(start_split, end_split)
-    
-    # just check them all instead, I don't fully understand how these splits were assigned
-    splits = np.arange(1, 30)
-    print(f'reading data for splits {splits}')
-
-    data = [0] * len(splits)
-    for i,split in enumerate(splits):
-        print(f'---------- split {split} ----------')
-        try:
-            data[i] = _get_mf_and_flux_for_split(source, split=split, region=region, 
-                                                 lev=lev, lat=lat, lon=lon, pft=pft, 
-                                                 rechunk=rechunk, processing_dir=processing_dir, 
-                                                 substr=substr, resample=resample, return_flux=return_flux,
-                                                 return_mf=return_mf, quiet=quiet, component=component, 
-                                                 start_date=np.datetime64(start_date), 
-                                                 end_date=np.datetime64(end_date))
-        except RuntimeError:
-            print(f'could not read split {split}; skipping')
-
-    # remove entries for data that could not be read
-    data = [d for d in data if d != 0]
-    
-    if return_flux and return_mf:
-        return xr.concat(data.T[0], dim='time'), xr.concat(data.T[1], dim='time')
-    else:
-        return xr.concat(data, dim='time')
-
-
-# -------------------------------------------------------------------------
-# -------------------------------------------------------------------------
-
-
-def read_transport_jacobians_residual(source, start_date, end_date, region, month,
-                                      lev=None, lat=None, lon=None, pft=None,
-                                      rechunk=True, processing_dir=None, substr=None, 
-                                      resample='1D', return_flux=True, return_mf=True,
-                                      quiet=False):
-    '''
-    Reads, temporally resamples, and returns mole fraction and/or flux data for a chosen 
-    emission source at specified position, or globally. For all arguments not described below, 
-    see the docstring of read_transport_jacobians_climo()
-
-    Parameters
-    ----------
-    month : string, optional
-        a year-month pair in the format 'YYYY-MM', specifying a tracer species by emission time.
-    '''
-    
-    splits = np.arange(1, 30)
-    print(f'reading data for splits {splits}')
-
-    data = [0] * len(splits)
-    for i,split in enumerate(splits):
-        print(f'---------- split {split} ----------')
-        try:
-            data[i] = _get_mf_and_flux_for_split(source, split=split, region=region, month=month, 
-                                                 lev=lev, lat=lat, lon=lon, pft=pft, 
-                                                 rechunk=rechunk, processing_dir=processing_dir, 
-                                                 substr=substr, resample=resample, 
-                                                 return_flux=return_flux, 
-                                                 return_mf=return_mf, quiet=quiet, 
-                                                 start_date=np.datetime64(start_date), 
-                                                 end_date=np.datetime64(end_date))
-        #except ValueError:
-        except RuntimeError:
-            print(f'could not read split {split}; skipping')
-
-    # remove entries for data that could not be read
-    data = [d for d in data if d != 0]
-
-    if return_flux and return_mf:
-        return xr.concat(data.T[0], dim='time'), xr.concat(data.T[1], dim='time')
-    else:
-        return xr.concat(data, dim='time')
-
-
-# -------------------------------------------------------------------------
-# -------------------------------------------------------------------------
-
-
-def _get_mf_and_flux_for_split(source, split,
-                               lev=None, lat=None, lon=None, pft=None, region=None, 
-                               month=None, component=None,
-                               rechunk=True, processing_dir=None, substr=None, resample='1D', 
-                               return_flux=True, return_mf=True, quiet=False, 
-                               start_date=None, end_date=None):
-    '''
-    Reads, resamples, and returns mole fraction and flux data for a chosen emission source, 
-    either globally, for a single latitude, a single longitude, or a single lat/lon position
-
-    Parameters
-    ----------
-    source : str
-        either 'ocean', 'gpp', or 'resp'
-    split : int
-        an integer giving the time split number
-    lev : int, optional
-        vertical level. If not provided, then all the full vertical domain is returned
-    lat : float, optional
-        latitude to extract data across time
-    lon : float, optional
-        longitude to extract data across time
-    pft : int, optional
-        an integer from 1 to 15 giving the plant functional type. If source is not gpp or resp, 
-        this is ignored. If source is gpp or resp and pft is not supplied, then all pft's will
-        be read and summed. Else, the specified pft is returned.
-    region : int, optional
-        an integer from 0 to 22 giving the emission region. If not supplied, then read from
-        the control runs. If supplied, then either read from the climatology or residual files
-        depending on the presence of the month arg.
-    month : string, optional
-        a year-month pair in the format 'YYYY-MM'. This gives the emission time of the tracers, 
-        in the case that the region arg is supplied. If both region and month are supplied, then
-        only the residual is returned.
-    component : string, optional
-        a specific component to return. If not specified, then either the residual is returned
-        (in the case that both region and month were provided), or all of the climatological
-        variables (including 'intercept', 'trend', 'sin12_1', 'sin12_2', 'cos12_1', 'cos12_2'). 
-        This arg can be used to request the return of just a single climatological component, 
-        e.g. 'trend'. Default is None, in which case all components are returned. If both
-        region and month are specified, this argument will be ignored as long as it is not 
-        conflicting. Valid options for this arg are:
-        ['intercept', 'trend', 'sin1', 'sin2', 'cos1', 'cos2']
-    rechunk : bool
-        whether or not to rechunk the original data files for more efficient reading.
-        Defaults to True, in which case disk space will be used by intermediate processed
-        data files (unless they already exist). Data is re-chunked in the time dimension 
-        only, into 30-day chunks.
+        Either 'ocean', 'gpp', or 'resp'.
+    component : int
+        Either 'residual', 'intercept', 'trend', 'seasonal', 
+        'sin12_1', 'sin12_2', 'sin12_3', 'cos12_1', 'cos12_2', or 'cos12_3'. 
+        If 'seasonal', then all six sin, cos terms will be read and summed.
     processing_dir : str, optional
-        path to location at which to write out processed (rechunked) data, if rechunk=True
-    substr : str, optional
-        optional substring to grep on when searching for data files. Any files not containing this 
-        substring will be ignored
-    resample : str, optional
-        a valid time string to pass to xarray.resample. Default is '1D', which causes the returned data
-        to be resampled to a daily frequency
-    return_flux : bool, optional
-        whether or not to read and return flux data
-    return_mf : bool, optional
-        whether or not to read and return mole fraction data
+        location for writing out intermediate analysis files. Defaults to None, 
+        in which case no intermediate files are written out
     quiet : bool, optional
-        whether or not to silence progress print statements
-    start_date : str, optional
-        start date to filter on. If the specified split is not within the range [start_date, end_date], 
-        then return no output. Defaults to None, in which case no date filtering is applied, and the 
-        specified split is returned
-    end_date : str, optional
-        end date to filter on. If the specified split is not within the range [start_date, end_date], 
-        then return no output. Defaults to None, in which case no date filtering is applied, and the 
-        specified split is returned
+        whether or not to suppress print statements from the methods of this 
+        object instance
 
-    Returns
+    Methods
     -------
-    If both return_flux and return_mf, a tuple like (mole fraction data, flux data)
-    Else, a single return of either the mole fraction or flux data
-    In either case, data formats are dictionaries of xarray DataArrays, with the dictionary
-    keys giving the WOMBAT components
+    read_mf()
+        reads mole fraction data for specified parameters
+    read_flux()
+        reads flux data for specified parameters
     '''
+    def __init__(self, source, component,
+                 processing_dir=None, quiet=True):
 
-    # configure file naming conventions
-    source_in = source
-    if(source == 'gpp' or source == 'resp'):
-        if(region is None):     pfx = 'sib4_'
-        else:                   pfx = ''
-        if(pft is not None):    sfx = f'_pft{pft:02d}'
-        else:                   sfx = 'allpft'
-        if(source == 'resp'):
-            if(region is None): source = 'resp_tot'
-            else:               source = 'bio_resp_tot'
-        if(source == 'gpp'):
-            if(region is None): source = 'gpp'
-            else:               source = 'bio_gpp'
-    elif(source == 'ocean'): 
-        if(region is None and month is None): 
-            source = 'ocean_lschulz'
-        pfx, sfx = '', ''
-    if(region is not None):
-        sfx = f'{sfx}_regionRegion{region:02d}'
-    if(month is not None):
-        assert region is not None, 'region must be supplied if month is supplied'
-        sfx = f'{sfx}_month{month}'
-    if(region is None and month is None):
-        pfx = f'control_{pfx}'
-
-    # identify data directory
-    if(region is None):
-        top_dir = gc_transport_control_dir
-    else:
-        top_dir = gc_transport_dir
-
-    # sanity check
-    if(not return_flux and not return_mf):
-        raise RuntimeError('At least one of return_flux and return_mf must be True')
-    if(month is not None):
-        if(month.count('-') != 1):
-            raise RuntimeError('arg month must be a string of the form YYYY-MM')
-
-    # if a pft was not specified, but the source is gpp or resp, then call this 
-    # function recursively for each pft, summing the result for final return
-    if('allpft' in sfx):
-        for i in range(15):
-            print(f'\n\n========== PFT {i+1}/15 ==========')
-            args = {'source':source_in, 'split':split, 
-                    'lev':lev, 'lat':lat, 'lon':lon, 'pft':i+1, 'region':region, 'month':month,
-                    'rechunk':rechunk, 'processing_dir':processing_dir, 'substr':substr, 
-                    'resample':resample, 'return_flux':return_flux, 'return_mf':return_mf, 
-                    'quiet':quiet}
-            if(i==0):
-                comp_data = _get_mf_and_flux_for_split(**args)
-                if(return_flux and return_mf): 
-                    comp_mf_data, comp_flux_data = comp_data[0], comp_data[1]
-            else:
-                comp_datai= _get_mf_and_flux_for_split(**args)
-                if(return_flux and return_mf):
-                    comp_mf_data   += comp_datai[0]
-                    comp_flux_data += comp_datai[1]
-                else:
-                    comp_data += comp_datai
-            
-        if(return_flux and return_mf): return comp_mf_data, comp_flux_data
-        elif(return_flux):             return comp_data
-        elif(rturn_mf):                return comp_data
-
-
-    # get mapping file
-    mapping = pd.read_csv(f'{top_dir}/mapping.csv')
+        if(source not in valid_sources):
+            raise RuntimeError(f'source must by one of {valid_sources}, not {source}')
+        if(component not in valid_components):
+            raise RuntimeError(f'component must by one of {valid_components}, not {component}')
+        self.source    = source
+        self.component = component
+        self.pdir      = processing_dir
+        self.quiet     = quiet
     
-    # lambda function for formatting file names per input component
-    fname = lambda component: f'{pfx}{source}_{component}{sfx}'
+    # ----------------------------------------------------------------------------------
+    # ----------------------------------------------------------------------------------
+
+    def read_mf(self, **kwargs):
+        if('region' not in kwargs.keys()):
+            raise RuntimeError('"region" must be supplied for read_mf()')
+        if('data_class' in kwargs.keys()):
+            raise RuntimeError('"data_class" not a valid arg for read_mf()')
+        kwargs['data_class'] = 'mf'
+        return self._read_transport_data(**kwargs)
     
-    # make dict of component labels -> component names
-    if('ocean' in source):
-        comp_labels = ['intercept', 'trend', 'sin1', 'sin2', 'cos1', 'cos2', 'residual']
-        comp_names  = dict(zip(comp_labels, ['intercept', 'trend', 'sin12_1', 'sin12_2', 
-                                             'cos12_1', 'cos12_2', 'residual']))
-    else:
-        comp_labels = ['intercept', 'trend', 'sin1', 'sin2', 'sin3', 'cos1', 'cos2', 'cos3', 'residual']
-        comp_names  = dict(zip(comp_labels, ['intercept', 'trend', 'sin12_1', 'sin12_2', 'sin12_3', 
-                                             'cos12_1', 'cos12_2', 'cos12_3', 'residual']))
-    if(region is not None):
-        # if region was specified, then we should either look at the climatology data, or the 
-        # residual data, depending on the value of the month arg
-        if(month is None):
-            comp_labels.remove('residual')
-            comp_names.pop('residual')
-        else:
-            comp_labels, comp_names = ['residual'], {'residual':'residual'}
-
-    # if a single component was specified, remove others from the component dict
-    if(component is not None):
-        if(component in comp_labels):
-            comp_names  = {component: comp_names[component]}
-            comp_labels = [component]
-            if(not quiet): print(f'component dict reduced to {comp_names}')
-        else:
-            raise RuntimeError(f'{component} is not a valid choice. Valid chocies are {comp_labels}')
-
-    # make dict of component labels -> maps
-    comp_maps = dict(zip(comp_labels, [mapping[mapping['basis_function'] == fname(comp_names[comp])] 
-                                       for comp in comp_labels]))
-    comp_runs = dict(zip(comp_labels, [comp_maps[comp]['run'].iat[0] for comp in comp_labels]))
-    comp_species = dict(zip(comp_labels, [comp_maps[comp]['species'].iat[0] for comp in comp_labels]))
-
-    # prepare settings for reading either flux or mole fraction
-    # TODO: this should obviously be a class...
-    read_args = [source, split, lev, lat, lon, region, month, comp_labels, comp_runs, comp_species,\
-                 rechunk, resample, substr, top_dir, quiet, processing_dir, start_date, end_date]
-    if(return_mf):
-        comp_mf_data   = _read_data('mole fraction', *read_args)
-    if(return_flux):
-        if(lev is not None):
-            warnings.warn(f'flux data exists only at the surface;'\
-                          f'ignoring specification of lev={lev} for flux data')
-            read_args[0] = None
-        comp_flux_data = _read_data('flux', *read_args)
-    print('done')
-
-    # ------ for the mole fraction data, subtract off the 400ppm background field
-    if(return_mf and comp_mf_data != 0):
-        # first get the background data
-        if(month is not None and region is not None):
-            basis_fn = f'background_residual_{month[0:4]+month[5:]}01'
-        elif(month is None and region is not None):
-            basis_fn = 'background_climatology_20140901'
-        elif(month is None and region is None):
-            basis_fn = 'background_control_20140901'
-        row = mapping[mapping['basis_function'] == basis_fn]
-        bg400_files = sorted(glob.glob(f'{gc_transport_dir}/{row["run"].values[0]}_split{split:02d}/OutputDir/*Hourly.*.nc4'))
-        bg400       = [0]*len(bg400_files)
-        for i in range(len(bg400)):
-            if(not quiet): print(f'Reading background data (file {i+1}/{len(bg400)})...          ', end='\r')
-            bg400[i] = xr.open_dataset(bg400_files[i])[f'SpeciesConcVV_{row["species"].values[0]}']
-            bg400[i] = bg400[i] * 1e6 # convert to pm
-            if(lev is not None): bg400[i] = bg400[i].isel(lev=lev-1)
-            if(lat is not None): bg400[i] = bg400[i].sel(lat=lat, method='nearest')
-            if(lon is not None): bg400[i] = bg400[i].sel(lon=lon, method='nearest')
-        if(not quiet): print('Concatenating background data...                    ')
-        bg400 = xr.concat(bg400, dim='time')
-        # now subtract the bbackground data from the mole fractions
-        for comp in comp_mf_data.keys():
-            if(not quiet): print(f'Subtracting background data for {comp}...')
-            comp_mf_data[comp] = comp_mf_data[comp] - bg400
-        if(not quiet): print('done')
-
-    # ------ format return dicts as xr Datasets
-    if(return_mf and comp_mf_data != 0):     comp_mf_data   = xr.Dataset(comp_mf_data)
-    if(return_flux and comp_flux_data != 0): comp_flux_data = xr.Dataset(comp_flux_data)
-
-    # ------ done; return
-    if(return_flux and return_mf): return comp_mf_data, comp_flux_data
-    elif(return_flux):             return comp_flux_data
-    elif(return_mf):               return comp_mf_data
-
-
-# --------------------------------------------------------------------------------
-# --------------------------------------------------------------------------------
-
-
-def _read_data(data_class, source, split, lev, lat, lon, region, month, 
-               comp_labels, comp_runs, comp_species, 
-               rechunk, resample, substr, top_dir, quiet, processing_dir, 
-               start_date, end_date):
-    '''
-    Reads flux or mole fraction data for specified options. All arguments not detailed below are expected
-    to be the same as those from get_mf_and_flux_for_split
-
-    Parameters
-    ----------
-    data_class : str
-        'flux' or 'mole fraction'
-    '''
-
-    if(data_class == 'flux'):
-        file_glob = 'HEMCO_diagnostics*'
-        var_pfx = 'Emis_'
-        time_chunk = int(hours_per_month/2) # bi-monthly; 1 month per file
-        scaling = lambda x: x * 1e3 * 86400 # convert to g m2/day from kg m2/s
-        chunking = {'time':time_chunk}
-        isel     = {'lev':0}
-    elif(data_class == 'mole fraction'):
-        file_glob = 'GEOSChem.SpeciesConcThreeHourly*'
-        var_pfx = 'SpeciesConcVV_'
-        time_chunk = 12 # 12 hours; 1 day per file
-        scaling = lambda x: (x * 1e6) # convert to ppm
-        if(lev is not None):
-            chunking = {'time':time_chunk}
-            isel     = {'lev':lev-1}
-        else:
-            chunking = {'time':time_chunk, 'lev':10}
-            isel     = None
+    def read_flux(self, **kwargs):
+        if('region' not in kwargs.keys()):
+            raise RuntimeError('"region" must be supplied for read_flux()')
+        if('data_class' in kwargs.keys()):
+            raise RuntimeError('"data_class" not a valid arg for read_flux()')
+        kwargs['data_class'] = 'flux'
+        return self._read_transport_data(**kwargs)
     
-    # ----------- get data -----------
-    # contatenate all files for this split
-    # coarsen 1-hourly data to daily-mean (by default)
-    if(lev is not None):
-        print(f'reading {data_class} data for level {lev} = {lev_to_p(lev)} hPa = {lev_to_z(lev)} km...')
-    else:
+    def read_mf_control(self, **kwargs):
+        if('region' in kwargs.keys()):
+            raise RuntimeError('"region" not a valid argument for read_mf_control()')
+        if('data_class' in kwargs.keys()):
+            raise RuntimeError('"data_class" not a valid arg for read_mf_control()')
+        kwargs['data_class'] = 'mf'
+        kwargs['region']     = None
+        return self._read_transport_data(**kwargs)
+    
+    def read_flux_control(self, **kwargs):
+        if('region' in kwargs.keys()):
+            raise RuntimeError('"region" not a valid argument for read_flux_control()')
+        if('data_class' in kwargs.keys()):
+            raise RuntimeError('"data_class" not a valid arg for read_flux_control()')
+        kwargs['data_class'] = 'flux'
+        kwargs['region']     = None
+        return self._read_transport_data(**kwargs)
+
+    # ----------------------------------------------------------------------------------
+    # ----------------------------------------------------------------------------------
+    
+    def _read_transport_data(self, region=None, start_date=None, emission_date=None, end_date=None,
+                             lev=None, lat=None, lon=None, pft=None,
+                             data_class='mf'):
+        '''
+        Reads and returns mole fraction data for a chosen TransCom region, and 
+        at specified position, or globally.
+
+        Parameters
+        ----------
+        region : int, optional
+            The TransCom region. Default is None, in which case the control runs are read.
+        emission_date : str, optional
+            The date of emission, in YYY-MM format.
+            Required when component='residual', otherwise ignored.
+        start_date : str, optional
+            The starting date of the data to retrieve, in YYYY-MM format.
+            Required when component!='residual'.
+            If not supplied and component='residual', then start_date=emission_date is assumed.
+            If not supplied, then emission_date must be supplied.
+        end_date : str
+            The ending date of the data to retrieve, in YYYY-MM format.
+        lev : int, optional
+            Vertical level. If not provided, then all the full vertical domain is returned.
+        lat : float, optional
+            Latitude to select the data on.
+        lon : float, optional
+            Longitude to select the data on.
+        pft : int, optional
+            An integer from 1 to 15 giving the plant functional type. If source is not 
+            'gpp' or 'resp', this is ignored. If source is 'gpp' or 'resp' and 'pft' is 
+            not supplied, then all pft's will be read and summed. Else, the specified 
+            pft is returned.
+        data_class : str, optional
+            Whether to return the mole fraction or flux data. Options are:
+            'mf'
+            'flux'
+    
+        Returns
+        -------
+        If both return_flux and return_mf, then returns a tuple (mole fraction data, flux data)
+        with the data types (xarray DataArray, xarray DataArray)
+        Else, a single return of either the mole fraction or flux data, as an xarray DataArray.
+        '''
+
+        # ------ check return type ------
+        if(data_class not in ['mf', 'flux']):
+            raise RuntimeError('data_class must be either "mf" or "flux"')
         if(data_class == 'flux'):
-            print(f'reading {data_class} data at the surface...')
-        elif(data_class == 'mole fraction'):
-            print(f'reading {data_class} data for all vertical levels...')
+            raise RuntimeError('data_class="flux" not yet implemented')
 
-    start_time = timeit.default_timer()
-    
-    comp_data = {}
-    for i,comp in enumerate(comp_labels):
-        data_files = sorted(glob.glob(f'{top_dir}/{comp_runs[comp]}_split{split:02d}'\
-                                      f'/OutputDir/{file_glob}'))
-        if(len(data_files) == 0):
-            if(not quiet): print(f'no data files found for {comp}, split {split}')
-            return 0
-        if(substr is not None):
-            data_files = np.array(data_files)[[substr in v for v in data_files]]
+        # ------ check inputs ------
+        if(self.component=='residual'):
+            if(emission_date is None):
+                raise RuntimeError('emission_date must be specified when component="residual"')
+            if(not is_yyyy_mm(emission_date)):
+                raise RuntimeError('emission_date must be of the form YYY-MM')
+            if(start_date is None):
+                start_date = emission_date
+        else:
+            if(start_date is None):
+                raise RuntimeError('start_date must be specified when component is not "residual"')
+            if(not is_yyyy_mm(start_date)):
+                raise RuntimeError('start_date must be of the form YYY-MM')
+        if(end_date is None):
+            raise RuntimeError('end_date must be specified')
+        if(not is_yyyy_mm(end_date)):
+            raise RuntimeError('end_date must be of the form YYY-MM')
+        if(data_class == 'flux' and lev is not None):
+            raise RuntimeError('argument "lev" cannot be specified when data_class="flux"')
+     
+        # ------ build year list ------
+        self.start_date    = np.datetime64(start_date+'-01')
+        self.end_date      = np.datetime64(end_date+'-01')
+        if(emission_date is not None):
+            self.emission_date = np.datetime64(emission_date+'-01')
+        else:
+            self.emission_date = None
 
-        varname = f'{var_pfx}{comp_species[comp]}'
+        self.start_year    = int(start_date.split('-')[0])
+        self.end_year      = int(end_date.split('-')[0])
+        years              = np.arange(self.start_year, self.end_year+1)
         
-        redo = False
-        N    = len(data_files)
-        data = [0]*N
-        for j in range(N):
-
-            # if redo is true, decrement j and work on previous file again
-            if(redo): j-=1
+        # ------ read data per year ------
+        data = [0] * len(years)
+        for i,year in enumerate(years):
+            if(not self.quiet):
+                print(f'---------- reading data for year {year} ----------')
             
-            # for the first file, check if this split is in the date range
-            if(j==0 and start_date is not None and end_date is not None):
-                header     = xr.open_dataset(data_files[j], decode_times=False)
-                if(data_class == 'flux'):
-                    fdate = data_files[j].split('/')[-1].split('.')[-2]
-                    file_start = np.datetime64(f'{int(fdate[0:4]):04d}-{int(fdate[4:]):02d}-01')
-                    file_end   = np.datetime64(f'{int(fdate[0:4]):04d}-{int(fdate[4:])+1:02d}-01')
+            data[i] = self._get_mf_or_flux_for_year(year, region, lev, lat, lon, 
+                                               pft, data_class) 
+            # slice on time
+            data[i] = data[i].sel(time=slice(start_date, end_date))
+            if(data[i].time.size == 0):
+                # for any data which has no entries within the specified time
+                # window, set to zero to flag for removal
+                data[i] = None
+
+        # remove entries for data that could not be read
+        data = [d for d in data if d is not None]
+
+        # ------ concatenate and return ------
+        if(not self.quiet): print(f'concatenating {len(data)} DataArrays')
+        return xr.concat(data, dim='time')
+
+
+    # -------------------------------------------------------------------------
+    # -------------------------------------------------------------------------
+
+
+    def _get_mf_or_flux_for_year(self, year, region, lev, lat, lon, pft, 
+                                 data_class, component=None):
+        '''
+        Reads and returns the mole fraction and/or flux data for the specified year.
+        For all arguments not described here, see the docstring of _read_transport_data()
+
+        Parameters
+        ----------
+        year : int
+            Year in which to read the data.
+        component : str, optional
+            Optional component to override self.component. Defaults to None.
+        '''
+
+        # ------ either take class-level component, or override for recursive calls ------
+        if(component is None): component = self.component
+
+        # ------ set flag for reading control runs ------
+        if(region is None): control = True
+        else:               control = False
+
+        # ------ configure component naming conventions ------
+        pftstr = ''
+        if(self.source == 'gpp'):
+            if(control):         source = 'control_sib4_gpp'
+            else:                source = 'bio_gpp'
+        if(self.source == 'resp'):
+            if(control):         source = 'control_sib4_resp_tot'
+            else:                source = 'bio_resp_tot'
+        if(self.source == 'gpp' or self.source == 'resp'):
+            if(pft is not None): pftstr = f'_pft{pft:02d}'
+            else:                pftstr = '_tmppft'
+        if(self.source == 'ocean'): 
+            if(control):         source = 'control_ocean_lschulz'
+            else:                source = 'ocean'
+
+        # ------ configure data directory names ------
+        sfx = pftstr
+        if(region is not None):
+            sfx = f'{sfx}_regionRegion{region:02d}'
+        if(self.emission_date is not None):
+            yyyy = int(str(self.emission_date)[:10].split('-')[0])
+            mm   = int(str(self.emission_date)[:10].split('-')[1])
+            sfx = f'{sfx}_month{yyyy:04d}-{mm:02d}'
+            if(region is None):
+                raise RuntimeError('region must be supplied if emission_time is supplied')
+        dirname = f'{source}_{component}{sfx}'
+        dirpath = f'{gc_transport_dir}/{dirname}'
+
+        # ------ handle recursive PFT calls ------
+        # if a pft was not specified, but the source is gpp or resp, then call this 
+        # function recursively for each avaialble pft, summing the result for final return
+        if(pft is None and 'ocean' not in source):
+            pfts_avail = sorted(glob.glob(f'{gc_transport_dir}/{dirname.replace(pftstr, "_pft*")}'))
+            pfts_avail = [int(s.split('_pft')[-1].split('_')[0]) for s in pfts_avail]
+            if(not self.quiet): print(f'reading PFTs {pfts_avail}...')
+            for i,pfti in enumerate(pfts_avail):
+                if(not self.quiet):
+                    print(f'========== PFT {pfti} ==========')
+                kwargs = {'year':year, 'region':region, 'lev':lev, 'lat':lat, 'lon':lon, 'pft':pfti,
+                          'data_class':data_class}
+                if(i==0):
+                    comp_data = self._get_mf_or_flux_for_year(**kwargs)
                 else:
-                    file_start = np.datetime64(header.simulation_start_date_and_time.split()[0])
-                    file_end   = np.datetime64(header.simulation_end_date_and_time.split()[0])
-                if(not quiet):
-                    print(f'split start: {file_start}, split end: {file_end}')
-                if(file_end <= start_date or file_start >= end_date):
-                    if(not quiet):
-                        print(f'split {split} out of date range; skipping')
-                    return 0     
+                    comp_data += self._get_mf_or_flux_for_year(**kwargs)        
+            return comp_data
 
-            # begin processing file
-            if(not quiet):
-                dfname = data_files[j].split('/')[-1]
-                print(f'reading {source} {data_class} {comp} var {varname} from file {dfname} ({j+1}/{N})...'+''.join([' ']*30), end='\r')
-
-            if(rechunk):
-                # read from re-chunked data if currently exists, or rechunk and write to disk 
-                # if necessary
-                rechunked_fname = data_files[j].split('/')[-1].split('.nc')[0] + '_' + varname
-                if(lev is not None):
-                    rechunked_fname += f'_lev{lev}'
-                if(region is not None):
-                    rechunked_fname += f'_region{region}'
-                if(month is not None):
-                    rechunked_fname += f'_month{month}'
-                rechunked_path = processing_dir+'/rechunked_transport_files/'+rechunked_fname+'.nc'
-                try:
-                    try:
-                        data[j] = xr.open_dataset(rechunked_path)[varname]
-                        redo=False
-                    except KeyError:
-                        # if the file exists but the variable is not found, then that generally means
-                        # that the previous run of this function crashed and left a corrupt file behind
-                        # In that case, delete the file and then redo this iteration
-                        print('file found but not tracer variable; likely corruption. Removing file and redoing...')
-                        os.remove(rechunked_path)
-                        redo=True
-                        continue
-                    if(not quiet): print('read rechunked data from file...')
-                except FileNotFoundError:
-                    if(not quiet): print(f'rechunking and writing out rechunked data to {rechunked_fname}...')
-                    rechunk_dataset(data_files[j], var=varname, chunking=chunking, isel=isel, 
-                                    outfile=rechunked_path)
-                    data[j] = xr.open_dataset(rechunked_path)[varname]
+        # ------ handle recursive seasonal calls ------
+        # if self.component='seasonal', then call this function recursively for each 
+        # sin,cos component, summing the result for final return
+        if(component == 'seasonal'):
+            if('ocean' in source):
+                seasonal_comps = ['sin12_1', 'sin12_2', 'cos12_1', 'cos12_2']
             else:
-                data[j] = xr.open_dataset(data_files[j])[varname]
-                if(lev is not None):
-                    data[j] = data[j].isel(lev=lev-1)
+                seasonal_comps = ['sin12_1', 'sin12_2', 'sin12_3', 'cos12_1', 'cos12_2', 'cos12_3']
+            for i in range(len(seasonal_comps)):
+                if(not self.quiet):
+                    print(f'========== seasonal component {seasonal_comps[i]} ==========')
+                kwargs = {'year':year, 'region':region, 'lev':lev, 'lat':lat, 'lon':lon, 'pft':pft,
+                          'component':seasonal_comps[i], 'data_class':data_class}
+                if(i==0):
+                    comp_data = self._get_mf_or_flux_for_year(**kwargs)
+                else:
+                    comp_data += self._get_mf_or_flux_for_year(**kwargs)
+            return comp_data
+                
+        # ------ set parameters for data read ------
+        if(data_class == 'mf'):
+            file_glob = 'daily-mole-fraction*'
+            var       = 'mole_fraction'
+            scaling   = lambda x: (x * 1e6) # convert to ppm
+        if(data_class == 'flux'):
+            file_glob = 'HEMCO_diagnostics*'
+            var = 'flux'
+            scaling = lambda x: x * 1e3 * 86400 # convert to g m2/day from kg m2/s
+        
+        # ------- locate data file -------
+        files = glob.glob(f'{dirpath}/*_{year}.nc4')
+        if(len(files) > 1):
+            raise RuntimeError('too many files found! Please debug.')
+        if(len(files) < 1):
+            if(len(glob.glob(f'{gc_transport_dir}/{dirname.replace(pftstr,"*")}')) > 1):
+                if not(self.quiet):
+                    print(f'pft {pft:02d} does not exist; skipping...')
+            else:
+                raise RuntimeError('no file matching these parameters!')
 
-            # record which file was used to read the data
-            if(rechunk): dfile = rechunked_path.split('/')[-1]
-            else:        dfile = data_files[j].split('/')[-1]
 
-            # select for lat, lon if specified
-            if(lat is not None):
-                data[j] = data[j].sel(lat=lat, method='nearest')
-            if(lon is not None):
-                data[j] = data[j].sel(lon=lon, method='nearest')
-            
-            # resample, write result out to intermediate file
-            if(resample is not None):
-                resampled_fname = dfile.strip('.nc')+'_'+resample+'_resampled.nc'
-                if(processing_dir is not None):
-                    resampled_path  = processing_dir+f'{resample}_resampled_data/'+resampled_fname
-                try:
-                    if(processing_dir is not None):
-                        data[j] = xr.open_dataset(resampled_path)[varname]
-                        if(not quiet): print('read time-resampled data from file...')
-                    else:
-                        raise FileNotFoundError
-                except FileNotFoundError:
-                    if(not quiet): print('Resampling data in time...'+''.join([' ']*40), end='\r')
-                    data[j] = data[j].resample(time=resample).mean()
-                    if(processing_dir is not None):
-                        if(not quiet): print('writing out resampled data...')
-                        data[j].to_netcdf(resampled_path)
-            
-            # do scaling
-            data[j] = scaling(data[j])
+        # ------ read data ------
+        if(not self.quiet):
+            print(f'reading {files[0].split("/")[-1]}...')
+        data = xr.open_dataset(files[0])[var]
 
-        # finally, concat in time
-        data = xr.concat(data, dim='time')
-        comp_data[comp] = data
-    
-    elapsed = timeit.default_timer() - start_time
-    print(f'took {elapsed:.2f} s')
-    return comp_data
+        # ------ do slicing ------
+        if(lat is not None):
+            if(not self.quiet): print(f'slicing data on lat={lat}...')
+            data = data.sel(lat=lat, method='nearest')
+        if(lon is not None):
+            if(not self.quiet): print(f'slicing data on lon={lon}...')
+            data = data.sel(lon=lon, method='nearest')
+        if(lev is not None):
+            plev, zlev = lev_to_p(lev), lev_to_z(lev)
+            if(not self.quiet): print(f'slicing data on lev={lev} ({plev} hPa // {zlev} km)...')
+            data = data.isel(lev=lev)
+
+        # ------ do scaling and return ------
+        data = scaling(data) 
+        return data

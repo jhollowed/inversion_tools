@@ -6,7 +6,7 @@
 
 # =========================================================================
 
-
+import re
 import os
 import pdb
 import glob
@@ -23,6 +23,14 @@ from .constants import *
 # ---- location of this file, for relative paths
 here = os.path.dirname(os.path.abspath(__file__))
 
+
+# -------------------------------------------------------------------------
+
+def is_yyyy_mm(s):
+    '''
+    Checks if the input string is a date of the form YYYY-MM
+    '''
+    return bool(re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", s))
 
 # -------------------------------------------------------------------------
 
