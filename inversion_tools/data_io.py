@@ -101,8 +101,8 @@ class Reader:
     # ----------------------------------------------------------------------------------
     # ----------------------------------------------------------------------------------
     
-    def _read_transport_data(self, region=None, start_date=None, emission_date=None, end_date=None,
-                             lev=None, lat=None, lon=None, pft=None,
+    def _read_transport_data(self, region=None, start_date=None, emission_date=None, 
+                             end_date=None, lev=None, lat=None, lon=None, pft=None,
                              data_class='mf'):
         '''
         Reads and returns mole fraction data for a chosen TransCom region, and 
@@ -119,9 +119,12 @@ class Reader:
             The starting date of the data to retrieve, in YYYY-MM format.
             Required when component!='residual'.
             If not supplied and component='residual', then start_date=emission_date is assumed.
-            If not supplied, then emission_date must be supplied.
-        end_date : str
-            The ending date of the data to retrieve, in YYYY-MM format.
+        end_date : str, optional
+            The ending date of the data to retrieve, in YYYY-MM format. This date is
+            inclusive, meaning that e.g. start_date=2015-01, end-date=2015-02, then two
+            months of data will be retruned.
+            If component='residual' and data_class='flux', then the flux is set to zero for 
+            all times outside of the emission month starting at emission_date.
         lev : int, optional
             Vertical level. If not provided, then all the full vertical domain is returned.
         lat : float, optional
@@ -148,8 +151,6 @@ class Reader:
         # ------ check return type ------
         if(data_class not in ['mf', 'flux']):
             raise RuntimeError('data_class must be either "mf" or "flux"')
-        if(data_class == 'flux'):
-            raise RuntimeError('data_class="flux" not yet implemented')
 
         # ------ check inputs ------
         if(self.component=='residual'):
@@ -175,13 +176,17 @@ class Reader:
         self.start_date    = np.datetime64(start_date+'-01')
         self.end_date      = np.datetime64(end_date+'-01')
         if(emission_date is not None):
-            self.emission_date = np.datetime64(emission_date+'-01')
+            self.emission_date  = np.datetime64(emission_date+'-01')
+            self.emission_year  = int(str(self.emission_date)[:10].split('-')[0])
+            self.emission_month = int(str(self.emission_date)[:10].split('-')[1])
         else:
-            self.emission_date = None
+            self.emission_date  = None
+            self.emission_year  = None
+            self.emission_month = None
 
-        self.start_year    = int(start_date.split('-')[0])
-        self.end_year      = int(end_date.split('-')[0])
-        years              = np.arange(self.start_year, self.end_year+1)
+        self.start_year = int(start_date.split('-')[0])
+        self.end_year   = int(end_date.split('-')[0])
+        years           = np.arange(self.start_year, self.end_year+1)
         
         # ------ read data per year ------
         data = [0] * len(years)
@@ -190,7 +195,7 @@ class Reader:
                 print(f'---------- reading data for year {year} ----------')
             
             data[i] = self._get_mf_or_flux_for_year(year, region, lev, lat, lon, 
-                                               pft, data_class) 
+                                                    pft, data_class)
             # slice on time
             data[i] = data[i].sel(time=slice(start_date, end_date))
             if(data[i].time.size == 0):
@@ -224,14 +229,30 @@ class Reader:
             Optional component to override self.component. Defaults to None.
         '''
 
-        # ------ either take class-level component, or override for recursive calls ------
+        # ------ either take class-level component, or override for recursive calls
         if(component is None): component = self.component
+        
+        # ------ if reading a residual flux, and the year is not the emission year,
+        #        then we will instead read the mole fraction, set the values to zero,
+        #        rename the variable to "flux", and return. This is done so that 
+        #        there can be a continuous flux time series for the residual case.
+        set_zero_fluxes = False
+        if(component == 'residual' and data_class == 'flux'):
+            if (year!=self.emission_year):
+                mf = self._get_mf_or_flux_for_year(year, region, lev, lat, lon, pft, 'mf', component)
+                zero_flux = (mf.isel(lev=0)*0).drop_vars('lev').rename('flux')
+                return zero_flux
+            else:
+                mf = self._get_mf_or_flux_for_year(year, region, lev, lat, lon, pft, 'mf', component)
+                format_data = lambda x: x.reindex_like(mf.isel(lev=0).drop_vars('lev'),fill_value=0)
+        else:
+            format_data = lambda data: data
 
-        # ------ set flag for reading control runs ------
+        # ------ set flag for reading control runs
         if(region is None): control = True
         else:               control = False
 
-        # ------ configure component naming conventions ------
+        # ------ configure component naming conventions
         pftstr = ''
         if(self.source == 'gpp'):
             if(control):         source = 'control_sib4_gpp'
@@ -246,14 +267,12 @@ class Reader:
             if(control):         source = 'control_ocean_lschulz'
             else:                source = 'ocean'
 
-        # ------ configure data directory names ------
+        # ------ configure data directory names
         sfx = pftstr
         if(region is not None):
             sfx = f'{sfx}_regionRegion{region:02d}'
         if(self.emission_date is not None):
-            yyyy = int(str(self.emission_date)[:10].split('-')[0])
-            mm   = int(str(self.emission_date)[:10].split('-')[1])
-            sfx = f'{sfx}_month{yyyy:04d}-{mm:02d}'
+            sfx = f'{sfx}_month{self.emission_year:04d}-{self.emission_month:02d}'
             if(region is None):
                 raise RuntimeError('region must be supplied if emission_time is supplied')
         dirname = f'{source}_{component}{sfx}'
@@ -274,8 +293,8 @@ class Reader:
                 if(i==0):
                     comp_data = self._get_mf_or_flux_for_year(**kwargs)
                 else:
-                    comp_data += self._get_mf_or_flux_for_year(**kwargs)        
-            return comp_data
+                    comp_data += self._get_mf_or_flux_for_year(**kwargs) 
+            return format_data(comp_data)
 
         # ------ handle recursive seasonal calls ------
         # if self.component='seasonal', then call this function recursively for each 
@@ -294,7 +313,7 @@ class Reader:
                     comp_data = self._get_mf_or_flux_for_year(**kwargs)
                 else:
                     comp_data += self._get_mf_or_flux_for_year(**kwargs)
-            return comp_data
+            return format_data(comp_data)
                 
         # ------ set parameters for data read ------
         if(data_class == 'mf'):
@@ -302,12 +321,12 @@ class Reader:
             var       = 'mole_fraction'
             scaling   = lambda x: (x * 1e6) # convert to ppm
         if(data_class == 'flux'):
-            file_glob = 'HEMCO_diagnostics*'
+            file_glob = 'daily-fluxes*'
             var = 'flux'
             scaling = lambda x: x * 1e3 * 86400 # convert to g m2/day from kg m2/s
         
         # ------- locate data file -------
-        files = glob.glob(f'{dirpath}/*_{year}.nc4')
+        files = glob.glob(f'{dirpath}/{file_glob}*_{year}.nc4')
         if(len(files) > 1):
             raise RuntimeError('too many files found! Please debug.')
         if(len(files) < 1):
@@ -336,5 +355,5 @@ class Reader:
             data = data.isel(lev=lev)
 
         # ------ do scaling and return ------
-        data = scaling(data) 
-        return data
+        data = scaling(data)
+        return format_data(data)

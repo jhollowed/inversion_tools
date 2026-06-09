@@ -13,4 +13,4 @@ valid_sources    = ['resp', 'gpp', 'ocean']
 data_dir         = '/work/noaa/co2/aschuh/WOMBAT_stuff'
 inverse_dir      = f'{data_dir}/wombat-v3-inverse'
 forward_dir      = f'{data_dir}/wombat-v3-forward'
-gc_transport_dir = f'{forward_dir}/4a_postprocessing_gc/intermediates/daily-mole-fraction'
+gc_transport_dir = f'{forward_dir}/4a_postprocessing_gc/intermediates/daily'
