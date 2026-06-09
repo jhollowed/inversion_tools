@@ -216,7 +216,7 @@ class Reader:
 
 
     def _get_mf_or_flux_for_year(self, year, region, lev, lat, lon, pft, 
-                                 data_class, component=None):
+                                 data_class, component=None, quiet=None):
         '''
         Reads and returns the mole fraction and/or flux data for the specified year.
         For all arguments not described here, see the docstring of _read_transport_data()
@@ -227,10 +227,13 @@ class Reader:
             Year in which to read the data.
         component : str, optional
             Optional component to override self.component. Defaults to None.
+        quiet : bool, optional
+            Optional flag to override self.quiet. Defaults to None.
         '''
 
-        # ------ either take class-level component, or override for recursive calls
+        # ------ either take class-level params, or override from args
         if(component is None): component = self.component
+        if(quiet is None):     quiet     = self.quiet
         
         # ------ if reading a residual flux, and the year is not the emission year,
         #        then we will instead read the mole fraction, set the values to zero,
@@ -239,11 +242,13 @@ class Reader:
         set_zero_fluxes = False
         if(component == 'residual' and data_class == 'flux'):
             if (year!=self.emission_year):
-                mf = self._get_mf_or_flux_for_year(year, region, lev, lat, lon, pft, 'mf', component)
+                mf = self._get_mf_or_flux_for_year(year, region, lev, lat, lon,
+                                                   pft, 'mf', component, True)
                 zero_flux = (mf.isel(lev=0)*0).drop_vars('lev').rename('flux')
                 return zero_flux
             else:
-                mf = self._get_mf_or_flux_for_year(year, region, lev, lat, lon, pft, 'mf', component)
+                mf = self._get_mf_or_flux_for_year(year, region, lev, lat, lon, 
+                                                   pft, 'mf', component, True)
                 format_data = lambda x: x.reindex_like(mf.isel(lev=0).drop_vars('lev'),fill_value=0)
         else:
             format_data = lambda data: data
@@ -284,9 +289,9 @@ class Reader:
         if(pft is None and 'ocean' not in source):
             pfts_avail = sorted(glob.glob(f'{gc_transport_dir}/{dirname.replace(pftstr, "_pft*")}'))
             pfts_avail = [int(s.split('_pft')[-1].split('_')[0]) for s in pfts_avail]
-            if(not self.quiet): print(f'reading PFTs {pfts_avail}...')
+            if(not quiet): print(f'reading PFTs {pfts_avail}...')
             for i,pfti in enumerate(pfts_avail):
-                if(not self.quiet):
+                if(not quiet):
                     print(f'========== PFT {pfti} ==========')
                 kwargs = {'year':year, 'region':region, 'lev':lev, 'lat':lat, 'lon':lon, 'pft':pfti,
                           'data_class':data_class}
@@ -305,7 +310,7 @@ class Reader:
             else:
                 seasonal_comps = ['sin12_1', 'sin12_2', 'sin12_3', 'cos12_1', 'cos12_2', 'cos12_3']
             for i in range(len(seasonal_comps)):
-                if(not self.quiet):
+                if(not quiet):
                     print(f'========== seasonal component {seasonal_comps[i]} ==========')
                 kwargs = {'year':year, 'region':region, 'lev':lev, 'lat':lat, 'lon':lon, 'pft':pft,
                           'component':seasonal_comps[i], 'data_class':data_class}
@@ -331,27 +336,27 @@ class Reader:
             raise RuntimeError('too many files found! Please debug.')
         if(len(files) < 1):
             if(len(glob.glob(f'{gc_transport_dir}/{dirname.replace(pftstr,"*")}')) > 1):
-                if not(self.quiet):
+                if not(quiet):
                     print(f'pft {pft:02d} does not exist; skipping...')
             else:
                 raise RuntimeError('no file matching these parameters!')
 
 
         # ------ read data ------
-        if(not self.quiet):
+        if(not quiet):
             print(f'reading {files[0].split("/")[-1]}...')
         data = xr.open_dataset(files[0])[var]
 
         # ------ do slicing ------
         if(lat is not None):
-            if(not self.quiet): print(f'slicing data on lat={lat}...')
+            if(not quiet): print(f'slicing data on lat={lat}...')
             data = data.sel(lat=lat, method='nearest')
         if(lon is not None):
-            if(not self.quiet): print(f'slicing data on lon={lon}...')
+            if(not quiet): print(f'slicing data on lon={lon}...')
             data = data.sel(lon=lon, method='nearest')
         if(lev is not None):
             plev, zlev = lev_to_p(lev), lev_to_z(lev)
-            if(not self.quiet): print(f'slicing data on lev={lev} ({plev} hPa // {zlev} km)...')
+            if(not quiet): print(f'slicing data on lev={lev} ({plev} hPa // {zlev} km)...')
             data = data.isel(lev=lev)
 
         # ------ do scaling and return ------
