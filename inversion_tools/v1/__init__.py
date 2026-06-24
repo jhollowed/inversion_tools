@@ -11,7 +11,3 @@
 
 from .utils import *
 from .data_io import *
-
-# define attributes
-__version__ = '0.1'
-__author__ = 'Joe Hollowed <hollowed@umich.gov>'

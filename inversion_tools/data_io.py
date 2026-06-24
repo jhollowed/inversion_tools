@@ -21,6 +21,77 @@ from timeit import default_timer
 from .utils import *
 from .constants import *
 
+def read_tm5_mf(*args, **kwargs):
+    return read_tm5(*args, **kwargs, data_class='mf')
+def read_tm5_flux(*args, **kwargs):
+    return read_tm5(*args, **kwargs, data_class='flux')
+
+def read_tm5(source, component, region, start_year, nmonths, et=None, pft=None, data_class=None):
+    '''
+    Temporary function for reading TM5 data
+
+    source : str
+        'ocean' or 'bio_resp_tot' or 'bio_gpp'
+    component : str
+        'residual' or 'trend' or 'intercept' or 'seasonal' or 
+        'sin12_1' or 'sin12_2' or 'sin12_3' or 'cos12_1' or 'cos12_2' or 'cos12_3'
+    region : int
+        1-22
+    et : str
+        emission time in YYY-MM
+    pft : int
+        1-15
+    '''
+
+    topdir  = '/work/noaa/co2/andy/Projects/WOMBAT/wombat-v3-forward/3b_transport_tm5/intermediates'
+    rundir  = f'{topdir}/runs'
+    mapping = f'{rundir}/tm5_mapping.csv'
+    tmap    = pd.read_csv(mapping)
+
+    if(component == 'ocean'):    
+        pfts = ''
+    else:                        
+        pfts = f'_pft{pft:02d}'
+    if(component == 'residual'): 
+        ety = int(et.split("-")[0])
+        etm = int(et.split("-")[1])
+        ets  = f'_month{ety:04d}-{etm:02d}'
+    else:                        
+        ets  = ''
+    name = f'{source}_{component}{pfts}_regionRegion{region:02d}{ets}'
+
+    row              = tmap[tmap['name'] == name]
+    run              = row['run'].values[0]
+    flux_var, mf_var = row['flux_field_names'].values[0], row['species'].values[0]
+    tm5_data         = None
+
+    date_dirs = sorted(glob.glob(f'{rundir}/{run}/output/*'))
+    for i,ddir in enumerate(date_dirs):
+        if(i+1 > nmonths):
+            continue
+        dirname = ddir.split('/')[-1]
+        year = int(dirname[:4])
+        if(data_class == 'mf'):
+            files = sorted(glob.glob(f'{ddir}/*mole*.nc'))
+            print(f'reading {len(files)} {data_class} files for dir {dirname}...')
+            data = [xr.open_dataset(f)[mf_var]-400 for f in files]
+        elif(data_class=='flux'):
+            files = sorted(glob.glob(f'{ddir}/*flux1x1*.nc'))
+            print(f'reading {len(files)} {data_class} files for dir {dirname}...')
+            data = [xr.open_dataset(f)[mf_var] for f in files]
+        print('concatenating...')
+        if(tm5_data is None):
+            tm5_data = xr.concat(data, dim='time')
+        else:
+            data     = xr.concat(data, dim='time')
+            tm5_data = xr.concat([tm5_data, data], dim='time')
+
+    if(data_class == 'flux'):
+        # scale from mol/m2/s to g m2/day
+        tm5_data = tm5_data * 12.011 * 86400 
+
+    return tm5_data
+
 # -------------------------------------------------------------------------
 
 class Reader:

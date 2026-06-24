@@ -11,6 +11,7 @@
 
 from .utils import *
 from .data_io import *
+from . import v1
 
 # define attributes
 __version__ = '0.2'

@@ -527,12 +527,13 @@ def _read_data(data_class, source, split, lev, lat, lon, region, month,
                     data[j] = xr.open_dataset(rechunked_path)[varname]
             else:
                 data[j] = xr.open_dataset(data_files[j])[varname]
-                if(lev is not None):
-                    data[j] = data[j].isel(lev=lev-1)
 
             # record which file was used to read the data
             if(rechunk): dfile = rechunked_path.split('/')[-1]
             else:        dfile = data_files[j].split('/')[-1]
+
+            # apply isel
+            data[j] = data[j].isel(isel)
 
             # select for lat, lon if specified
             if(lat is not None):
