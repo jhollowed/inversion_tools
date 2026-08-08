@@ -35,9 +35,11 @@ def is_yyyy_mm(s):
 # -------------------------------------------------------------------------
 
 
-def lev_to_p(lev):
+def gc_lev_to_p(lev):
     '''
-    Converts level index to pressure in hPa
+    Converts a GEOS-Chem level index to pressure in hPa
+    for the 47-level grid defined at
+    https://geos-chem.readthedocs.io/en/latest/supplemental-guides/vertical-grids.html
 
     Parameters
     ----------
@@ -59,9 +61,11 @@ def lev_to_p(lev):
 # -------------------------------------------------------------------------
 
 
-def p_to_lev(p):
+def gc_p_to_lev(p):
     '''
-    Converts pressure in hPa to level index
+    Converts a pressure in hPa to the nearest GEOS-Chem level index 
+    for the 47-level grid defined at
+    https://geos-chem.readthedocs.io/en/latest/supplemental-guides/vertical-grids.html
 
     Parameters
     ----------
@@ -83,9 +87,11 @@ def p_to_lev(p):
 # -------------------------------------------------------------------------
 
 
-def lev_to_z(lev):
+def gc_lev_to_z(lev):
     '''
     Converts level index to altitude in km
+    for the 47-level grid defined at
+    https://geos-chem.readthedocs.io/en/latest/supplemental-guides/vertical-grids.html
 
     Parameters
     ----------
@@ -107,9 +113,11 @@ def lev_to_z(lev):
 # -------------------------------------------------------------------------
 
 
-def lev_to_p_interfaces(lev):
+def gc_lev_to_p_interfaces(lev):
     '''
     Converts level index to interface pressures in hPa
+    for the 47-level grid defined at
+    https://geos-chem.readthedocs.io/en/latest/supplemental-guides/vertical-grids.html
 
     Parameters
     ----------
@@ -139,9 +147,11 @@ def lev_to_p_interfaces(lev):
 # -------------------------------------------------------------------------
 
 
-def p_to_p_interfaces(p):
+def gc_p_to_p_interfaces(p):
     '''
-    Converts level index to interface pressures in hPa
+    Converts pressure in hPa to interface pressures in hPa
+    for the 47-level grid defined at
+    https://geos-chem.readthedocs.io/en/latest/supplemental-guides/vertical-grids.html
 
     Parameters
     ----------
@@ -171,6 +181,56 @@ def p_to_p_interfaces(p):
 
 # -------------------------------------------------------------------------
 
+def align_hybrid_datasets(x, xp, y, yp, p):
+    '''
+    Aligns the data x to the grid of data y by interpolating in the horizontal, then
+    interpolates both datasets onto a common set of isobars.
+    In the horizontal, a conservative regrid from the xESMF package is used. 
+    In the vertical, a 1D logarithmic interpolation from MetPy is used to remap both
+    datasets from a hybrid terrain-following coordinate to isobaric levels. 
+
+    Parameters
+    ----------
+    x  : xarray DataArray
+        A dataset to horizontally remap, with at least dimensions 'lat', 'lon', 
+        and 'lev'
+    xp : xarray DataArray
+        The gridded pressure corresponding to the data x, with matching dimensions
+    y  : xarray DataArray
+        A dataset on the destination horizontal grid, with at least dimensions
+        'lat, 'lon', and 'lev'
+    p : array-like
+        The desired pressure levels of the destination vertical grid
+    '''
+
+    # Verify dimensions, transpose to matching order
+    if(set(x.dims) != set(y.dims) or set(xp.dims) != set(yp.dims) or \
+       set(x.dims) != set(xp.dims)):
+        raise RuntimeError('Datasets x, xp, y, and yp must all have the same dimensions')
+    for dim in x.dims:
+        if(x[dim] != y[dim] or x[dim] != xp[dim] or x[dim] != yp[dim]):
+            raise RuntimeError(f'Dataset coordinates do not match in dimension {dim}')
+    x  = x.transpose(*y.dims)
+    yp = yp.transpose(*y.dims)
+    xp = xp.transpose(*y.dims)
+
+    # do horizontal interpolation x -> y
+    x = ctb.align_datasets_horz(y, x)
+    
+    # do vertical interpolation
+    x = ctb.align_datasets_vert(x, xp, p)
+    y = ctb.align_datasets_vert(y, yp, p)
+    
+    return x, y
+
+def align_datasets_horz(x, y):
+    return ctb.align_datasets_horz(y, x)
+
+def align_datasets_vert(x, xp, p):
+    return ctb.log_interp_to_isobars(x, xp, p)
+
+# -------------------------------------------------------------------------
+
 
 def column_average(mf, outfile=None, overwrite=False):
     '''
@@ -192,7 +252,7 @@ def column_average(mf, outfile=None, overwrite=False):
     '''
     varname = f'{mf.name}_column_average'
     try:
-        if(overwrite):
+        if(overwrite or outfile is None):
             raise FileNotFoundError
         return xr.open_dataset(outfile)[varname]
     except FileNotFoundError:

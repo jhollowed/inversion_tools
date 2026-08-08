@@ -15,6 +15,7 @@ import warnings
 import numpy as np
 import pandas as pd
 import xarray as xr
+import urllib.request
 from timeit import default_timer
 
 # ---- imports from this package
@@ -26,7 +27,7 @@ def read_tm5_mf(*args, **kwargs):
 def read_tm5_flux(*args, **kwargs):
     return read_tm5(*args, **kwargs, data_class='flux')
 
-def read_tm5(source, component, region, start_year, nmonths, et=None, pft=None, data_class=None):
+def read_tm5(source, component, region, nmonths, start_year=None, et=None, pft=None, data_class=None):
     '''
     Temporary function for reading TM5 data
 
@@ -37,10 +38,16 @@ def read_tm5(source, component, region, start_year, nmonths, et=None, pft=None, 
         'sin12_1' or 'sin12_2' or 'sin12_3' or 'cos12_1' or 'cos12_2' or 'cos12_3'
     region : int
         1-22
+    start_year : int
+        starting year to grab data from. Required when component != 'residual'
+    nmonths : int
+        number of months of data to grab.
     et : str
-        emission time in YYY-MM
+        emission time in YYY-MM. Required when component == 'residual'
     pft : int
         1-15
+    data_class : str
+        'flux' or 'mf'
     '''
 
     topdir  = '/work/noaa/co2/andy/Projects/WOMBAT/wombat-v3-forward/3b_transport_tm5/intermediates'
@@ -48,15 +55,20 @@ def read_tm5(source, component, region, start_year, nmonths, et=None, pft=None, 
     mapping = f'{rundir}/tm5_mapping.csv'
     tmap    = pd.read_csv(mapping)
 
-    if(component == 'ocean'):    
+    if(source == 'ocean'):    
         pfts = ''
     else:                        
         pfts = f'_pft{pft:02d}'
-    if(component == 'residual'): 
+    if(component == 'residual'):
+        if(start_year is not None or et is None):
+            raise RuntimeError('use et for residual, not start_year')
         ety = int(et.split("-")[0])
         etm = int(et.split("-")[1])
         ets  = f'_month{ety:04d}-{etm:02d}'
+        start_year = ety
     else:                        
+        if(start_year is None or et is not None):
+            raise RuntimeError('use start_year when not residual, not et')
         ets  = ''
     name = f'{source}_{component}{pfts}_regionRegion{region:02d}{ets}'
 
@@ -66,19 +78,30 @@ def read_tm5(source, component, region, start_year, nmonths, et=None, pft=None, 
     tm5_data         = None
 
     date_dirs = sorted(glob.glob(f'{rundir}/{run}/output/*'))
+    i_start = None
     for i,ddir in enumerate(date_dirs):
-        if(i+1 > nmonths):
-            continue
         dirname = ddir.split('/')[-1]
+        
+        if(int(dirname[:4]) < start_year):
+            continue
+        else:
+            if(i_start == None): i_start = i
+            
+        if((i-i_start)+1 > nmonths):
+            continue
+            
         year = int(dirname[:4])
         if(data_class == 'mf'):
             files = sorted(glob.glob(f'{ddir}/*mole*.nc'))
             print(f'reading {len(files)} {data_class} files for dir {dirname}...')
-            data = [xr.open_dataset(f)[mf_var]-400 for f in files]
+            data = [(xr.open_dataset(f)[mf_var]-400) for f in files]
         elif(data_class=='flux'):
             files = sorted(glob.glob(f'{ddir}/*flux1x1*.nc'))
             print(f'reading {len(files)} {data_class} files for dir {dirname}...')
-            data = [xr.open_dataset(f)[mf_var] for f in files]
+            if(len(files)==0): 
+                continue
+            data = [(xr.open_dataset(f)[mf_var]) for f in files]
+        
         print('concatenating...')
         if(tm5_data is None):
             tm5_data = xr.concat(data, dim='time')
@@ -86,11 +109,128 @@ def read_tm5(source, component, region, start_year, nmonths, et=None, pft=None, 
             data     = xr.concat(data, dim='time')
             tm5_data = xr.concat([tm5_data, data], dim='time')
 
+    # take daily average
+    print('taking daily average...')
+    tm5_data = tm5_data.resample(time="1D").mean()
+
+    # rename dimensions to match GC
+    tm5_data = tm5_data.rename({'longitude':'lon', 'latitude':'lat'})
+    if(data_class == 'mf'):
+        tm5_data = tm5_data.rename({'level':'lev'})
+
     if(data_class == 'flux'):
         # scale from mol/m2/s to g m2/day
-        tm5_data = tm5_data * 12.011 * 86400 
+        tm5_data *= 12.011 * 86400
+    elif(data_class == 'mf'):
+        # correct for erroneous CO2-to-C factor, per Mike
+        tm5_data /= (44.009/12.011)
 
     return tm5_data
+
+# -------------------------------------------------------------------------
+
+def read_tm5_pressure(start, end):
+    '''
+    Temporary function for reading CT2022 daily gridded pressure data
+
+    start : np.datetime64
+        starting date (year, month, day)
+    end : np.datetime64
+        ending date (year, month, day)
+    '''
+
+    url   = 'https://gml.noaa.gov/aftp/products/carbontracker/co2/CT2022/molefractions/co2_total/'
+    cache = '/work/noaa/co2/jhollo/CT2022_gridded_mfs' 
+
+    dates    = np.arange(start, end + np.timedelta64(1, 'D'), dtype='datetime64[D]')
+    pressure = [0]*len(dates)
+
+    for i in range(len(dates)):
+        date    = str(dates[i].astype('datetime64[D]'))
+        file    = f'CT2022.molefrac_glb3x2_{date}.nc'
+        cached  = f'{cache}/{file}'
+        cachedp = f'{cache}/{file.strip(".nc")}_pressure.nc'
+        try:
+            p = xr.open_dataset(cachedp)['pressure']
+        except FileNotFoundError:
+            # download from NOAA
+            print(f'file for {date} not found; downloading...')
+            urllib.request.urlretrieve(f'{url}/{file}', cached)
+            # grab only the pressure data, then discard the downloaded file
+            p = xr.open_dataset(cached)['pressure']
+            os.remove(cached)
+            # rename horizontal dims
+            p = p.rename({'latitude':'lat', 'longitude':'lon'})
+            # take linear average of interface pressures
+            p = (p + p.shift(boundary=-1)) / 2
+            p = p.isel(boundary=slice(0, -1))
+            p = p.rename({'boundary':'lev'})
+            # update meta data for clarity
+            p.attrs['comment'] = 'air pressure at level midpoints'
+            p.to_netcdf(cachedp)
+        pressure[i] = p
+
+    print('concatenating pressure data...')
+    pressure = xr.concat(pressure, dim='time')
+
+    print('taking daily average...')
+    pressure = pressure.resample(time="1D").mean()
+
+    return pressure
+
+# -------------------------------------------------------------------------
+
+def read_gc_pressure(start, end):
+    '''
+    Temporary function for reading GC gridded pressure data
+
+    start : np.datetime64
+        starting date (year, month, day)
+    end : np.datetime64
+        ending date (year, month, day)
+    '''
+
+    data_dir = '{forward_dir}/data/GEOS_Chem/ExtData/GEOS_2x2.5/MERRA2'
+    cache    = '/work/noaa/co2/jhollo/GC_gridded_mfs' 
+
+    dates     = np.arange(start, end + np.timedelta64(1, 'D'), dtype='datetime64[D]')
+    all_years = dates.astype('datetime64[Y]').astype(int) + 1970
+    years     = np.unique(all_years)
+
+    #pressure = [0]*len(dates)
+
+    for i in range(len(years)):
+        cached = f'{cache}/GC_MERRA2_{year}_daily_pressure.nc'
+        try:
+            p = xr.open_dataset(cached)['pressure']
+        except FileNotFoundError:
+            for j,date in enumerate(dates[all_years == years[i]]): 
+                year, month, day = str(date).split("-")
+                file   = f'{year}/{month}/MERRA2.{year}{month}{day}.I3.2x25.nc4'
+                # grab 3-hourly from disc from NOAA
+                print(f'daily file for {date} not found; processing...')
+                urllib.request.urlretrieve(f'{url}/{file}', cached)
+                # grab only the pressure data, then discard the downloaded file
+                p = xr.open_dataset(cached)['pressure']
+                os.remove(cached)
+                # rename horizontal dims
+                p = p.rename({'latitude':'lat', 'longitude':'lon'})
+                # take linear average of interface pressures
+                p = (p + p.shift(boundary=-1)) / 2
+                p = p.isel(boundary=slice(0, -1))
+                p = p.rename({'boundary':'lev'})
+                # update meta data for clarity
+                p.attrs['comment'] = 'air pressure at level midpoints'
+                p.to_netcdf(cachedp)
+        pressure[i] = p
+
+    print('concatenating pressure data...')
+    pressure = xr.concat(pressure, dim='time')
+
+    print('taking daily average...')
+    pressure = pressure.resample(time="1D").mean()
+
+    return pressure
 
 # -------------------------------------------------------------------------
 
@@ -410,7 +550,8 @@ class Reader:
                 if not(quiet):
                     print(f'pft {pft:02d} does not exist; skipping...')
             else:
-                raise RuntimeError('no file matching these parameters!')
+                raise RuntimeError('no file matching these parameters! Double check that '\
+                                   'specified flux source is nonzero in the specified region')
 
 
         # ------ read data ------
