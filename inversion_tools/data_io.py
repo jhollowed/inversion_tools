@@ -204,17 +204,12 @@ def read_gc_pressure(start, end):
         try:
             p = xr.open_dataset(cached)['pressure']
         except FileNotFoundError:
+            print(f'daily file for {date} not found; processing...')
             for j,date in enumerate(dates[all_years == years[i]]): 
                 year, month, day = str(date).split("-")
-                file   = f'{year}/{month}/MERRA2.{year}{month}{day}.I3.2x25.nc4'
-                # grab 3-hourly from disc from NOAA
-                print(f'daily file for {date} not found; processing...')
-                urllib.request.urlretrieve(f'{url}/{file}', cached)
-                # grab only the pressure data, then discard the downloaded file
-                p = xr.open_dataset(cached)['pressure']
-                os.remove(cached)
-                # rename horizontal dims
-                p = p.rename({'latitude':'lat', 'longitude':'lon'})
+                # grab 3-hourly from disc
+                file = f'{year}/{month}/MERRA2.{year}{month}{day}.I3.2x25.nc4'
+                p    = xr.open_dataset(file)['PS']
                 # take linear average of interface pressures
                 p = (p + p.shift(boundary=-1)) / 2
                 p = p.isel(boundary=slice(0, -1))

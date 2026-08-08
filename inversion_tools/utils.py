@@ -50,10 +50,8 @@ def gc_lev_to_p(lev):
     -------
     The level pressure, in hPa
     '''
-    df = pd.read_fwf(f'{here}/../data/levels47.csv',skiprows=3,
-                     names=["L", "eta_edge", "eta_mid", "alt_km", "p_hpa"])
     # keep only midpoint rows
-    mid = df[df["eta_mid"].notna()].reset_index(drop=True)
+    mid = GC_VERT[GC_VERT["eta_mid"].notna()].reset_index(drop=True)
     # get pressure
     return float(mid.loc[mid["L"] == lev, "p_hpa"].iloc[0])
 
@@ -76,10 +74,8 @@ def gc_p_to_lev(p):
     -------
     The level index
     '''
-    df = pd.read_fwf(f'{here}/../data/levels47.csv',skiprows=3,
-                     names=["L", "eta_edge", "eta_mid", "alt_km", "p_hpa"])
     # keep only midpoint rows
-    mid = df[df["eta_mid"].notna()].reset_index(drop=True)
+    mid = GC_VERT[GC_VERT["eta_mid"].notna()].reset_index(drop=True)
     # get pressure
     return float(mid.loc[np.isclose(mid["p_hpa"], p, rtol=0.013), "L"].iloc[0])
 
@@ -102,10 +98,8 @@ def gc_lev_to_z(lev):
     -------
     The level pressure, in km
     '''
-    df = pd.read_fwf(f'{here}/../data/levels47.csv',skiprows=3,
-                     names=["L", "eta_edge", "eta_mid", "alt_km", "p_hpa"])
     # keep only midpoint rows
-    mid = df[df["eta_mid"].notna()].reset_index(drop=True)
+    mid = GC_VERT[GC_VERT["eta_mid"].notna()].reset_index(drop=True)
     # get pressure
     return float(mid.loc[mid["L"] == lev, "alt_km"].iloc[0])
 
@@ -130,21 +124,18 @@ def gc_lev_to_p_interfaces(lev):
     '''
     if(lev > 47 or lev < 1):
         raise RuntimeError('lev must be between 0 and 47')
-    df = pd.read_fwf(f'{here}/../data/levels47.csv',skiprows=3,
-                     names=["L", "eta_edge", "eta_mid", "alt_km", "p_hpa"])
     # add interface levels
-    mask              = df["L"].isna()
-    df.loc[mask, "L"] = df["L"].ffill().loc[mask] - 0.5
-    df.loc[0, "L"]    = df.loc[1, "L"] + 0.5
+    mask                   = GC_VERT["L"].isna()
+    GC_VERT.loc[mask, "L"] = GC_VERT["L"].ffill().loc[mask] - 0.5
+    GC_VERT.loc[0, "L"]    = GC_VERT.loc[1, "L"] + 0.5
     # get interface pressures
-    edge = df[df["eta_edge"].notna()].reset_index(drop=True)
+    edge = GC_VERT[GC_VERT["eta_edge"].notna()].reset_index(drop=True)
     # lookup functions
     get_p_edge = lambda lev: float(edge.loc[edge["L"] == lev, "p_hpa"].iloc[0])
     # return pressure
-    return [get_p_edge(lev-0.5), get_p_edge(lev+0.5)]
+ 
 
-
-# -------------------------------------------------------------------------
+ # -------------------------------------------------------------------------
 
 
 def gc_p_to_p_interfaces(p):
@@ -165,14 +156,12 @@ def gc_p_to_p_interfaces(p):
     
     p *= 1000 # temporary, dunno why GC pressure data is in Pa/10
 
-    df = pd.read_fwf(f'{here}/../data/levels47.csv',skiprows=3,
-                     names=["L", "eta_edge", "eta_mid", "alt_km", "p_hpa"])
     # add interface levels
-    mask              = df["L"].isna()
-    df.loc[mask, "L"] = df["L"].ffill().loc[mask] - 0.5
-    df.loc[0, "L"]    = df.loc[1, "L"] + 0.5
+    mask                   = GC_VERT["L"].isna()
+    GC_VERT.loc[mask, "L"] = GC_VERT["L"].ffill().loc[mask] - 0.5
+    GC_VERT.loc[0, "L"]    = GC_VERT.loc[1, "L"] + 0.5
     # get interface pressures around input pressure
-    edge = np.array(df[df["eta_edge"].notna()].reset_index(drop=True)['p_hpa'])
+    edge = np.array(GC_VERT[GC_VERT["eta_edge"].notna()].reset_index(drop=True)['p_hpa'])
     if(p < edge[0] or p> edge[-1]):
         raise RuntimeError(f'p must be between {edge[0]} and {edge[-1]} hPa')
     idx  = np.searchsorted(edge, p)
@@ -180,6 +169,28 @@ def gc_p_to_p_interfaces(p):
 
 
 # -------------------------------------------------------------------------
+
+
+def gc_ps_to_p(ps):
+    '''
+    Builds gridded pressure for GEOS-Chem given a 2D surface pressure by using the 
+    vertical grid hybrid ceofficients defined at
+    https://geos-chem.readthedocs.io/en/latest/supplemental-guides/vertical-grids.html
+
+    Parameters
+    ----------
+    ps : xarray DataArray
+        surface pressure with dimensions of at least 'lat','lon'
+
+    Returns
+    -------
+    The pressure on the input surface pressure dimensions, with an added vertical
+    dimension 'lev'
+    '''
+    
+
+# -------------------------------------------------------------------------
+
 
 def align_hybrid_datasets(x, xp, y, yp, p):
     '''
