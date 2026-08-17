@@ -17,6 +17,10 @@ import xarray as xr
 from datetime import datetime
 from timeit import default_timer
 
+from IPython import get_ipython
+from IPython.display import display, Pretty
+_display_handle = None
+
 # ---- imports from this package
 from .constants import *
 
@@ -171,74 +175,163 @@ def gc_p_to_p_interfaces(p):
 # -------------------------------------------------------------------------
 
 
-def gc_ps_to_p(ps):
+def interface_to_mid(x, idim='boundary'):
     '''
-    Builds gridded pressure for GEOS-Chem given a 2D surface pressure by using the 
-    vertical grid hybrid ceofficients defined at
-    https://geos-chem.readthedocs.io/en/latest/supplemental-guides/vertical-grids.html
+    Moves a variable x from interface levels to midpoint levels.
+    Assumes that the input dat is defined on a vertical dimension idim. 
+    Output is the linear average of each adjacent pair of values, on
+    a new dimension called "lev".
+
+    Parameters
+    ----------
+    x : xarray DataArray
+        the input data, with at least on dimension idim
+    idim : str, optional
+        the vertical dimension name. Default is 'boundary'
+    '''
+    x = (x + x.shift({idim:-1})) / 2
+    x = x.isel({idim:slice(0, -1)})
+    x = x.rename({idim:'lev'})
+    return x
+
+
+# -------------------------------------------------------------------------
+
+
+def hybrid_ps_to_p(ps, A, B):
+    '''
+    Builds gridded pressure given a 2D surface pressure and A and B hybrid 
+    coefficients defined on level interfaces. This uses the GEOS-Chem 
+    formulation, which is (A + B*PS), rather than the common (A*P0 + B*PS)
+    (i.e. A has units of hPa here)
 
     Parameters
     ----------
     ps : xarray DataArray
         surface pressure with dimensions of at least 'lat','lon'
+    A  : xarray DataArray
+        A coefficient (hPa) with dimension 'ilev'
+    B : xarray DataArray
+        B coefficient (dimensionless) with dimension 'ilev'
 
     Returns
     -------
     The pressure on the input surface pressure dimensions, with an added vertical
     dimension 'lev'
     '''
+
+    if(len(A) != len(B)):
+        raise RuntimeError('length of A and B must be equal')
+
+    p_edges = A + B * ps
+    p = (p_edges + p_edges.shift(ilev=-1)) / 2
+    p = p.isel(ilev=slice(0, -1))
+    
+    p = p.rename('pressure')
+    p = p.rename({'ilev':'lev'})
+    p.attrs['comment'] = 'air pressure at level midpoints '\
+                         '(average of interface pressures, '\
+                         'where each interface pressure is P = A + B*PS)'
+    p.attrs.pop('long_name', None) 
+    p.attrs.pop('standard_name', None)
+    p.attrs.pop('gamap_category', None)
+    return p
     
 
 # -------------------------------------------------------------------------
 
 
-def align_hybrid_datasets(x, xp, y, yp, p):
+def align_datasets(x, xv, y, yv, v, vertical='pressure'):
     '''
     Aligns the data x to the grid of data y by interpolating in the horizontal, then
-    interpolates both datasets onto a common set of isobars.
+    interpolates both datasets onto a common set of vertical levels.
     In the horizontal, a conservative regrid from the xESMF package is used. 
-    In the vertical, a 1D logarithmic interpolation from MetPy is used to remap both
-    datasets from a hybrid terrain-following coordinate to isobaric levels. 
+    In the vertical, a 1D interpolation from MetPy is used to remap both
+    datasets from the input levels to constant surfaces of reference variable.
+    For the case that the vertical coordinate is 'pressure', then a logarithmic 
+    interpolation is used.
+    For the case that the vertical coordinate is 'theta' (potential temperature), 
+    then a linear interpolation is used. That is, it is assumed that the quantities 
+    x and y vary approximately linearly across isentropes. If this assumption does
+    not hold (e.g. x and y are a pressure variable), then this function is not 
+    appropriate. See:
+    https://doi.org/10.1175/1520-0450(1994)033<0694:ITIIEA>2.0.CO;2
+    The time dimension, if present, is reduced to the intersection of the time 
+    coordiantes of each dataset.
 
     Parameters
     ----------
     x  : xarray DataArray
         A dataset to horizontally remap, with at least dimensions 'lat', 'lon', 
         and 'lev'
-    xp : xarray DataArray
-        The gridded pressure corresponding to the data x, with matching dimensions
+    xv : xarray DataArray
+        The gridded variable for the new vertical levels (either pressure or 
+        potential temperature) corresponding to dataset x.
     y  : xarray DataArray
         A dataset on the destination horizontal grid, with at least dimensions
         'lat, 'lon', and 'lev'
-    p : array-like
-        The desired pressure levels of the destination vertical grid
+    yv : xarray DataArray
+        The gridded variable for the new vertical levels (either pressure or 
+        potential temperature) corresponding to dataset y
+    v : array-like
+        The desired levels of the destination vertical grid, with units matching
+        that of xv and yv
+    vertical : str, optional
+        The type of vertical coordinate. Currently supports either 'pressure' or
+        'theta'. If 'pressure', then xv, yv, and v must be provided in Pa, and a 
+        logarithmic interpolation is used. If 'theta', then xv, yv, and v must be
+        provided in K, and a linear interpolation is used. That is, it is assumed
+        that the quantities x and y vary approximately linearly across isentropes.
     '''
 
     # Verify dimensions, transpose to matching order
-    if(set(x.dims) != set(y.dims) or set(xp.dims) != set(yp.dims) or \
-       set(x.dims) != set(xp.dims)):
-        raise RuntimeError('Datasets x, xp, y, and yp must all have the same dimensions')
-    for dim in x.dims:
-        if(x[dim] != y[dim] or x[dim] != xp[dim] or x[dim] != yp[dim]):
-            raise RuntimeError(f'Dataset coordinates do not match in dimension {dim}')
+    if(set(x.dims) != set(y.dims) or set(xv.dims) != set(yv.dims) or \
+       set(x.dims) != set(xv.dims)):
+        raise RuntimeError('Datasets x, xv, y, and yv must all have the same dimensions')
     x  = x.transpose(*y.dims)
-    yp = yp.transpose(*y.dims)
-    xp = xp.transpose(*y.dims)
+    yv = yv.transpose(*y.dims)
+    xv = xv.transpose(*y.dims)
+    
+    # reindex time
+    if('time' in x.dims):
+        time = x.time.intersection(y.time)
+        x  = x.reindex(time=time)
+        xv = xv.reindex(time=time)
+        y  = y.reindex(time=time)
+        yv = yv.reindex(time=time)
+    
+    # Verify matching coordinates
+    for dim in x.dims:
+        if(not x[dim].identical(xv[dim]) or not x[dim].identical(xv[dim])):
+            raise RuntimeError(f'Coordinates of x and xv must match in dimension {dim}')
+        if(not y[dim].identical(xv[dim]) or not y[dim].identical(yv[dim])):
+            raise RuntimeError(f'Coordinates of y and yv must match in dimension {dim}')
+        if(not x[dim].identical(y[dim])):
+            if(dim != 'time'):
+                raise RuntimeError(f'Coordinates of x and y must match in dimension {dim}')
+            else:
+                warnings.warn('Datasets x and y do not have matching coordiantes in the time'\
+                              'time dimension; reindexing each to their intersection.')
+                time = x.time.to_index().intersection(y.time.to_index())
+                x  = x.reindex(time=time)
+                xv = xv.reindex(time=time)
+                y  = y.reindex(time=time)
+                yv = yv.reindex(time=time)
 
-    # do horizontal interpolation x -> y
-    x = ctb.align_datasets_horz(y, x)
+    # do horizontal interpolation x -> y, xv -> y
+    x  = ctb.conservative_regrid(y, x)
+    xv = ctb.conservative_regrid(y, xv)
     
     # do vertical interpolation
-    x = ctb.align_datasets_vert(x, xp, p)
-    y = ctb.align_datasets_vert(y, yp, p)
-    
+    if(vertical == 'pressure'):
+        x = ctb.log_interp_to_isobars(x, xv, v)
+        y = ctb.log_interp_to_isobars(y, yv, v)
+    elif(vertical == 'theta'):
+        x = ctb.linear_interp_to_isentropes(x, xv, v)
+        y = ctb.linear_interp_to_isentropes(y, yv, v)
+
     return x, y
 
-def align_datasets_horz(x, y):
-    return ctb.align_datasets_horz(y, x)
-
-def align_datasets_vert(x, xp, p):
-    return ctb.log_interp_to_isobars(x, xp, p)
 
 # -------------------------------------------------------------------------
 
@@ -340,3 +433,24 @@ def column_center_of_mass(mf, outfile=None, overwrite=False):
 
 
 # -------------------------------------------------------------------------
+
+
+def iprint(text):
+    '''
+    overwrites the previous printed line with text. Works for either Jupyter
+    notebooks or temrinal
+    '''
+
+    global _display_handle
+
+    try:
+        from IPython import get_ipython
+        if get_ipython() is not None:
+            if _display_handle is None:
+                _display_handle = display(Pretty(text), display_id=True)
+            else:
+                _display_handle.update(Pretty(text))
+        else:
+            print(f"\033[1A\033[2K{text}")
+    except ImportError:
+        print(f"\033[1A\033[2K{text}")

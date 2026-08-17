@@ -27,7 +27,8 @@ def read_tm5_mf(*args, **kwargs):
 def read_tm5_flux(*args, **kwargs):
     return read_tm5(*args, **kwargs, data_class='flux')
 
-def read_tm5(source, component, region, nmonths, start_year=None, et=None, pft=None, data_class=None):
+def read_tm5(source, component, region, nmonths, start_date=None, 
+             pft=None, data_class=None):
     '''
     Temporary function for reading TM5 data
 
@@ -38,12 +39,12 @@ def read_tm5(source, component, region, nmonths, start_year=None, et=None, pft=N
         'sin12_1' or 'sin12_2' or 'sin12_3' or 'cos12_1' or 'cos12_2' or 'cos12_3'
     region : int
         1-22
-    start_year : int
-        starting year to grab data from. Required when component != 'residual'
+    start_date : int
+        starting date to grab data from in YYYY-MM. When component='residual', 
+        this is both the date of emission of the residual pulse, as well as the 
+        start date of the data period to grab.
     nmonths : int
         number of months of data to grab.
-    et : str
-        emission time in YYY-MM. Required when component == 'residual'
     pft : int
         1-15
     data_class : str
@@ -60,15 +61,11 @@ def read_tm5(source, component, region, nmonths, start_year=None, et=None, pft=N
     else:                        
         pfts = f'_pft{pft:02d}'
     if(component == 'residual'):
-        if(start_year is not None or et is None):
-            raise RuntimeError('use et for residual, not start_year')
-        ety = int(et.split("-")[0])
-        etm = int(et.split("-")[1])
+        ety = int(start_date.split("-")[0])
+        etm = int(start_date.split("-")[1])
         ets  = f'_month{ety:04d}-{etm:02d}'
         start_year = ety
     else:                        
-        if(start_year is None or et is not None):
-            raise RuntimeError('use start_year when not residual, not et')
         ets  = ''
     name = f'{source}_{component}{pfts}_regionRegion{region:02d}{ets}'
 
@@ -87,7 +84,7 @@ def read_tm5(source, component, region, nmonths, start_year=None, et=None, pft=N
         else:
             if(i_start == None): i_start = i
             
-        if((i-i_start)+1 > nmonths):
+        if((i-i_start) > nmonths):
             continue
             
         year = int(dirname[:4])
@@ -129,103 +126,170 @@ def read_tm5(source, component, region, nmonths, start_year=None, et=None, pft=N
 
 # -------------------------------------------------------------------------
 
-def read_tm5_pressure(start, end):
-    '''
-    Temporary function for reading CT2022 daily gridded pressure data
+def read_tm5_meteo(start, end, var, overwrite=False,
+                   cache = '/work/noaa/co2/jhollo/TM5_CT2022_gridded_vars'):
+    return read_meteo('TM5', start, end, var, overwrite, cache)
 
+def read_gc_meteo(start, end, var, overwrite=False,
+                  cache = '/work/noaa/co2/jhollo/GC_MERRA2_gridded_vars'):
+    return read_meteo('GC', start, end, var, overwrite, cache)
+
+def read_meteo(model, start, end, var, overwrite, cache):
+    '''
+    Temporary function for reading TM5 (CT2022) or GC (MERRA2) gridded 
+    meteorological varaibles
+
+    model : str
+        either 'TM5 or 'GC'
     start : np.datetime64
         starting date (year, month, day)
     end : np.datetime64
         ending date (year, month, day)
+    var : str
+        name of variable to read. Options are:
+        'pressure', 'theta'
+    cache : str, optional
+        location at which to cache intermediate computations
+    overwrite : bool, optional
+        whether or not to overwrite the existing cached data.
+        Defaults to False, in which case the cached data is
+        returned if it exists.
     '''
 
-    url   = 'https://gml.noaa.gov/aftp/products/carbontracker/co2/CT2022/molefractions/co2_total/'
-    cache = '/work/noaa/co2/jhollo/CT2022_gridded_mfs' 
+    valid_vars = ['pressure', 'temperature', 'theta']
+    if(var not in valid_vars):
+        raise RuntimeError(f'var must be one of {valid_vars}')
 
-    dates    = np.arange(start, end + np.timedelta64(1, 'D'), dtype='datetime64[D]')
-    pressure = [0]*len(dates)
+    if(var == 'theta'):
+        print(f'{model} potential temperature will be computed from pressure and temp...')
+        p     = read_meteo(model, start, end, 'pressure', overwrite, cache) / 100 # convert to hPa
+        t     = read_meteo(model, start, end, 'temperature', overwrite, cache)
+        print(f'computing potential temperature...')
+        theta = t*(p0/p)**kappa
+        theta = theta.rename('potential_temperature')
+        theta.attrs.pop("long_name", None)
+        theta.attrs.pop("standard_name", None)
+        theta.attrs['units']   = 'Kelvin'
+        theta.attrs['comment'] = 'potential temperature at level midpoints'
+        return theta
 
-    for i in range(len(dates)):
-        date    = str(dates[i].astype('datetime64[D]'))
-        file    = f'CT2022.molefrac_glb3x2_{date}.nc'
-        cached  = f'{cache}/{file}'
-        cachedp = f'{cache}/{file.strip(".nc")}_pressure.nc'
-        try:
-            p = xr.open_dataset(cachedp)['pressure']
-        except FileNotFoundError:
-            # download from NOAA
-            print(f'file for {date} not found; downloading...')
-            urllib.request.urlretrieve(f'{url}/{file}', cached)
-            # grab only the pressure data, then discard the downloaded file
-            p = xr.open_dataset(cached)['pressure']
-            os.remove(cached)
-            # rename horizontal dims
-            p = p.rename({'latitude':'lat', 'longitude':'lon'})
-            # take linear average of interface pressures
-            p = (p + p.shift(boundary=-1)) / 2
-            p = p.isel(boundary=slice(0, -1))
-            p = p.rename({'boundary':'lev'})
-            # update meta data for clarity
-            p.attrs['comment'] = 'air pressure at level midpoints'
-            p.to_netcdf(cachedp)
-        pressure[i] = p
+    print(f'reading {model} {var}...')
 
-    print('concatenating pressure data...')
-    pressure = xr.concat(pressure, dim='time')
-
-    print('taking daily average...')
-    pressure = pressure.resample(time="1D").mean()
-
-    return pressure
-
-# -------------------------------------------------------------------------
-
-def read_gc_pressure(start, end):
-    '''
-    Temporary function for reading GC gridded pressure data
-
-    start : np.datetime64
-        starting date (year, month, day)
-    end : np.datetime64
-        ending date (year, month, day)
-    '''
-
-    data_dir = '{forward_dir}/data/GEOS_Chem/ExtData/GEOS_2x2.5/MERRA2'
-    cache    = '/work/noaa/co2/jhollo/GC_gridded_mfs' 
+    tm5_url = 'https://gml.noaa.gov/aftp/products/carbontracker/co2/CT2022/molefractions/co2_total/'
+    gc_dir  = f'{forward_dir}/data/GEOS_Chem/ExtData/GEOS_2x2.5/MERRA2'
 
     dates     = np.arange(start, end + np.timedelta64(1, 'D'), dtype='datetime64[D]')
     all_years = dates.astype('datetime64[Y]').astype(int) + 1970
     years     = np.unique(all_years)
+    all_data  = [0]*len(years)
+    
+    # TM5 data (CT2022) needs dimensions renamed
+    tm5_horz_coords = {'latitude':'lat', 'longitude':'lon'}
+    tm5_coords      = {'latitude':'lat', 'longitude':'lon', 'level':'lev'}
 
-    #pressure = [0]*len(dates)
+    # ------ First get data per requested year
+    # For TM5, this means downloading files from the NOAA server. For GC, we read
+    # from disc on Herules.
+    # The strategy is to compute and cache the requested data for whole years at time,
+    # and only trim to the requested date range (start, end) as a final step.
+    # This allows us to cache variables in one-year intervals
+    for i,year in enumerate(years):
 
-    for i in range(len(years)):
-        cached = f'{cache}/GC_MERRA2_{year}_daily_pressure.nc'
+        if(model == 'TM5'):
+            cached = f'{cache}/TM5_CT2022_{year}_daily_{var}.nc'
+        elif(model == 'GC'):
+            cached = f'{cache}/GC_MERRA2_{year}_daily_{var}.nc'
+
         try:
-            p = xr.open_dataset(cached)['pressure']
+            if(overwrite): raise FileNotFoundError
+            year_data = xr.open_dataset(cached)[var]
+            print(f'read {model} daily {var} data for {year}')
+
         except FileNotFoundError:
-            print(f'daily file for {date} not found; processing...')
-            for j,date in enumerate(dates[all_years == years[i]]): 
-                year, month, day = str(date).split("-")
-                # grab 3-hourly from disc
-                file = f'{year}/{month}/MERRA2.{year}{month}{day}.I3.2x25.nc4'
-                p    = xr.open_dataset(file)['PS']
-                # take linear average of interface pressures
-                p = (p + p.shift(boundary=-1)) / 2
-                p = p.isel(boundary=slice(0, -1))
-                p = p.rename({'boundary':'lev'})
-                # update meta data for clarity
-                p.attrs['comment'] = 'air pressure at level midpoints'
-                p.to_netcdf(cachedp)
-        pressure[i] = p
+            print(f'daily {model} {var} file for {year} not found')
+            year_data  = []
+            year_dates = dates = np.arange(np.datetime64(f"{year}-01-01"),
+                                           np.datetime64(f"{year + 1}-01-01"),
+                                           np.timedelta64(1, "D"))
 
-    print('concatenating pressure data...')
-    pressure = xr.concat(pressure, dim='time')
+            # loop through all dates in this year; download/read, average, concat
+            for j,date in enumerate(year_dates):
+                prog   = f'({j+1}/{len(year_dates)})'
+                #if(j==0): print('\n')
+                iprint(f'{prog} processing date {date}')
 
-    print('taking daily average...')
-    pressure = pressure.resample(time="1D").mean()
+                if(model == 'TM5'):
+                    date_str   = str(date.astype('datetime64[D]'))
+                    file       = f'CT2022.molefrac_glb3x2_{date_str}.nc'
+                    downloaded = f'{cache}/daily_raw/{file}'
+                    try:
+                        xr.open_dataset(downloaded)
+                    except FileNotFoundError:
+                        # download from NOAA, trim variables, cache
+                        iprint(f'{prog} downloading data from NOAA...')
+                        urllib.request.urlretrieve(f'{tm5_url}/{file}', downloaded)
+                        vars_to_save = ['temperature' if v == 'theta' else v for v in valid_vars]
+                        iprint(f'{prog} caching select variables...')
+                        downloaded_vars = xr.open_dataset(downloaded)[vars_to_save]
+                        os.remove(downloaded)
+                        downloaded_vars.to_netcdf(downloaded)
+                elif(model == 'GC'):
+                    _, month, day = str(date).split("-")
+                    file = f'{gc_dir}/{year}/{month}/MERRA2.{year}{month}{day}.I3.2x25.nc4'
 
-    return pressure
+                # grab or compute the requested variable
+                # ------ temperature
+                if(var == 'temperature'):
+                    iprint(f'{prog} reading temperature...')
+                    if(model == 'TM5'):
+                        t = xr.open_dataset(downloaded)['temperature']
+                        t = t.rename(tm5_coords)
+                    elif(model == 'GC'):
+                        t = xr.open_dataset(file)['T']
+                    t = t.resample(time="1D").mean()
+                    t = t.rename('temperature')
+                    t.attrs['comment'] = 'temperature at level midpoints'
+                    year_data.append(t)
+                # ------ pressure
+                elif(var=='pressure'):
+                    if(model == 'TM5'):
+                        iprint(f'{prog} reading pressure...')
+                        p = xr.open_dataset(downloaded)[var]
+                        p = p.resample(time="1D").mean()
+                        p = p.rename(tm5_horz_coords)
+                        # move pressure from interface to midpoint levels
+                        p = interface_to_mid(p)
+                    elif(model == 'GC'):
+                        iprint(f'{prog} reading surface pressure...')
+                        # first get daily average of surface presssure
+                        ps = xr.open_dataset(file)['PS']
+                        ps = ps.resample(time="1D").mean()
+                        # then convert to gridded pressure using the hybrid coefficients A,B
+                        iprint(f'{prog} building 3D pressure...')
+                        edges   = GC_VERT[GC_VERT['eta_edge'].notna()].reset_index(drop=True)
+                        A       = xr.DataArray(edges['Ap'].values, dims='ilev')
+                        B       = xr.DataArray(edges['Bp'].values, dims='ilev')
+                        p       = hybrid_ps_to_p(ps, A, B)
+                        p.attrs.pop("long_name", None)
+                        p.attrs.pop("standard_name", None)
+                    p = p.rename('pressure')
+                    p.attrs['comment'] = 'air pressure at level midpoints' 
+                    year_data.append(p)
+
+            # write out this year to nc
+            print('writing out...')
+            year_data = xr.concat(year_data, dim='time')
+            year_data.to_netcdf(cached)
+        all_data[i] = year_data
+
+    # concatenate and trim all years of data
+    print(f'concatenating and trimming data to '\
+          f'({start.astype("datetime64[D]")}, {end.astype("datetime64[D]")})...')
+    if(len(all_data)>1):
+        all_data = xr.concat([d.sel(time=slice(start, end)) for d in all_data], dim='time')
+    else:
+        all_data = all_data[0].sel(time=slice(start, end))
+    return all_data
 
 # -------------------------------------------------------------------------
 
@@ -266,6 +330,12 @@ class Reader:
         self.component = component
         self.pdir      = processing_dir
         self.quiet     = quiet
+        
+        # ------ set residual flag ------
+        if(component == 'residual'):
+            self.residual = True
+        else:
+            self.residual = False
     
     # ----------------------------------------------------------------------------------
     # ----------------------------------------------------------------------------------
@@ -307,9 +377,8 @@ class Reader:
     # ----------------------------------------------------------------------------------
     # ----------------------------------------------------------------------------------
     
-    def _read_transport_data(self, region=None, start_date=None, emission_date=None, 
-                             end_date=None, lev=None, lat=None, lon=None, pft=None,
-                             data_class='mf'):
+    def _read_transport_data(self, region=None, start_date=None, end_date=None, 
+                             lev=None, lat=None, lon=None, pft=None, data_class='mf'):
         '''
         Reads and returns mole fraction data for a chosen TransCom region, and 
         at specified position, or globally.
@@ -318,19 +387,17 @@ class Reader:
         ----------
         region : int, optional
             The TransCom region. Default is None, in which case the control runs are read.
-        emission_date : str, optional
-            The date of emission, in YYY-MM format.
-            Required when component='residual', otherwise ignored.
         start_date : str, optional
             The starting date of the data to retrieve, in YYYY-MM format.
             Required when component!='residual'.
-            If not supplied and component='residual', then start_date=emission_date is assumed.
+            When component='residual', this specifies both the residual pulse emission date,
+            as well as the start date of the retrieved data range.
         end_date : str, optional
             The ending date of the data to retrieve, in YYYY-MM format. This date is
             inclusive, meaning that e.g. start_date=2015-01, end-date=2015-02, then two
             months of data will be retruned.
             If component='residual' and data_class='flux', then the flux is set to zero for 
-            all times outside of the emission month starting at emission_date.
+            all times outside of the emission month.
         lev : int, optional
             Vertical level. If not provided, then all the full vertical domain is returned.
         lat : float, optional
@@ -359,32 +426,24 @@ class Reader:
             raise RuntimeError('data_class must be either "mf" or "flux"')
 
         # ------ check inputs ------
-        if(self.component=='residual'):
-            if(emission_date is None):
-                raise RuntimeError('emission_date must be specified when component="residual"')
-            if(not is_yyyy_mm(emission_date)):
-                raise RuntimeError('emission_date must be of the form YYY-MM')
-            if(start_date is None):
-                start_date = emission_date
-        else:
-            if(start_date is None):
-                raise RuntimeError('start_date must be specified when component is not "residual"')
-            if(not is_yyyy_mm(start_date)):
-                raise RuntimeError('start_date must be of the form YYY-MM')
+        if(start_date is None):
+            raise RuntimeError('start_date must be specified')
+        if(not is_yyyy_mm(start_date)):
+            raise RuntimeError('start_date must be of the form YYY-MM')
         if(end_date is None):
             raise RuntimeError('end_date must be specified')
         if(not is_yyyy_mm(end_date)):
             raise RuntimeError('end_date must be of the form YYY-MM')
         if(data_class == 'flux' and lev is not None):
             raise RuntimeError('argument "lev" cannot be specified when data_class="flux"')
-     
+ 
         # ------ build year list ------
         self.start_date    = np.datetime64(start_date+'-01')
         self.end_date      = np.datetime64(end_date+'-01')
-        if(emission_date is not None):
-            self.emission_date  = np.datetime64(emission_date+'-01')
-            self.emission_year  = int(str(self.emission_date)[:10].split('-')[0])
-            self.emission_month = int(str(self.emission_date)[:10].split('-')[1])
+        if(self.residual):
+            self.emission_date  = np.datetime64(start_date+'-01')
+            self.emission_year  = int(str(self.start_date)[:10].split('-')[0])
+            self.emission_month = int(str(self.start_date)[:10].split('-')[1])
         else:
             self.emission_date  = None
             self.emission_year  = None
@@ -482,10 +541,10 @@ class Reader:
         sfx = pftstr
         if(region is not None):
             sfx = f'{sfx}_regionRegion{region:02d}'
-        if(self.emission_date is not None):
+        if(self.residual):
             sfx = f'{sfx}_month{self.emission_year:04d}-{self.emission_month:02d}'
             if(region is None):
-                raise RuntimeError('region must be supplied if emission_time is supplied')
+                raise RuntimeError('region must be supplied if component=residual')
         dirname = f'{source}_{component}{sfx}'
         dirpath = f'{gc_transport_dir}/{dirname}'
 
