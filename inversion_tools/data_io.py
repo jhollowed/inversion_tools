@@ -28,7 +28,7 @@ def read_tm5_flux(*args, **kwargs):
     return read_tm5(*args, **kwargs, data_class='flux')
 
 def read_tm5(source, component, region, nmonths, start_date=None, 
-             pft=None, data_class=None):
+             pft=None, data_class=None, resample='1D'):
     '''
     Temporary function for reading TM5 data
 
@@ -36,7 +36,9 @@ def read_tm5(source, component, region, nmonths, start_date=None,
         'ocean' or 'bio_resp_tot' or 'bio_gpp'
     component : str
         'residual' or 'trend' or 'intercept' or 'seasonal' or 
-        'sin12_1' or 'sin12_2' or 'sin12_3' or 'cos12_1' or 'cos12_2' or 'cos12_3'
+        'sin12_1' or 'sin12_2' or 'sin12_3' or 'cos12_1' or 'cos12_2' or 'cos12_3'.
+        If 'seasonal', then all of the sin and cos components are read, summed, 
+        and returned
     region : int
         1-22
     start_date : int
@@ -56,6 +58,15 @@ def read_tm5(source, component, region, nmonths, start_date=None,
     mapping = f'{rundir}/tm5_mapping.csv'
     tmap    = pd.read_csv(mapping)
 
+    if(component == 'seasonal'):
+        for scomp in ['sin12_1', 'sin12_2', 'sin12_3', 'cos12_1', 'cos12_2', 'cos12_3']:
+            args = [source, scomp, region, nmonths, start_date, pft, data_class]
+            if(scomp == 'sin12_1'):
+                tm5_data = read_tm5(*args)
+            else:
+                tm5_data += read_tm5(*args)
+        return tm5_data
+
     if(source == 'ocean'):    
         pfts = ''
     else:                        
@@ -65,11 +76,16 @@ def read_tm5(source, component, region, nmonths, start_date=None,
         etm = int(start_date.split("-")[1])
         ets  = f'_month{ety:04d}-{etm:02d}'
         start_year = ety
-    else:                        
+    else:
+        ety = int(start_date.split("-")[0])
+        start_year = ety
         ets  = ''
     name = f'{source}_{component}{pfts}_regionRegion{region:02d}{ets}'
 
     row              = tmap[tmap['name'] == name]
+    if(len(row) == 0): 
+        raise RuntimeError(f'No row in tm5_mapping.csv found with name \'{name}\'; please debug')
+
     run              = row['run'].values[0]
     flux_var, mf_var = row['flux_field_names'].values[0], row['species'].values[0]
     tm5_data         = None
@@ -107,8 +123,9 @@ def read_tm5(source, component, region, nmonths, start_date=None,
             tm5_data = xr.concat([tm5_data, data], dim='time')
 
     # take daily average
-    print('taking daily average...')
-    tm5_data = tm5_data.resample(time="1D").mean()
+    if(resample is not None):
+        print(f'doing time resampling at {resample}...')
+        tm5_data = tm5_data.resample(time=resample).mean()
 
     # rename dimensions to match GC
     tm5_data = tm5_data.rename({'longitude':'lon', 'latitude':'lat'})
@@ -159,6 +176,9 @@ def read_meteo(model, start, end, var, overwrite, cache):
     valid_vars = ['pressure', 'temperature', 'theta']
     if(var not in valid_vars):
         raise RuntimeError(f'var must be one of {valid_vars}')
+    valid_models = ['TM5', 'GC']
+    if(model not in valid_models):
+        raise RuntimeError(f'model must be one of {valid_models}')
 
     if(var == 'theta'):
         print(f'{model} potential temperature will be computed from pressure and temp...')
@@ -267,9 +287,13 @@ def read_meteo(model, start, end, var, overwrite, cache):
                         # then convert to gridded pressure using the hybrid coefficients A,B
                         iprint(f'{prog} building 3D pressure...')
                         edges   = GC_VERT[GC_VERT['eta_edge'].notna()].reset_index(drop=True)
+                        mid     = GC_VERT[GC_VERT['eta_mid'].notna()].reset_index(drop=True)
                         A       = xr.DataArray(edges['Ap'].values, dims='ilev')
                         B       = xr.DataArray(edges['Bp'].values, dims='ilev')
                         p       = hybrid_ps_to_p(ps, A, B)
+                        # needs to be reversed to match GC data
+                        #p = p.isel({'lev': slice(None, None, -1)})
+                        # remove extraneous attributes
                         p.attrs.pop("long_name", None)
                         p.attrs.pop("standard_name", None)
                     p = p.rename('pressure')

@@ -16,6 +16,7 @@ import pandas as pd
 import xarray as xr
 from datetime import datetime
 from timeit import default_timer
+import climate_utils.climate_toolbox as ctb
 
 from IPython import get_ipython
 from IPython.display import display, Pretty
@@ -23,6 +24,7 @@ _display_handle = None
 
 # ---- imports from this package
 from .constants import *
+#from .data_io import *
 
 # ---- location of this file, for relative paths
 here = os.path.dirname(os.path.abspath(__file__))
@@ -35,6 +37,45 @@ def is_yyyy_mm(s):
     Checks if the input string is a date of the form YYYY-MM
     '''
     return bool(re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", s))
+
+
+# -------------------------------------------------------------------------
+
+
+def arrays_equal(x, y):
+    '''
+    Checks for equality of xarray DataArrays
+    '''
+    sizes_equal  = x.size == y.size
+    arrays_equal = np.array_equal(x.values, y.values, equal_nan=True)
+    return (sizes_equal and arrays_equal)
+
+
+# -------------------------------------------------------------------------
+
+
+def tm5_lev_to_p(lev):
+    '''
+    Converts a TM5 level index to pressure in hPa. This does not come from the true
+    vertical grid definition, but rather take the mean midlatitude pressure across time 
+    for the underlying 3D pressure field (ERA5) at the specified level
+
+    Parameters
+    ----------
+    lev : int
+        level index
+
+    Returns
+    -------
+    The level pressure, in hPa
+    '''
+    # get 3D field
+    p = read_meteo('TM5', np.datetime64('2015-01-01'), np.datetime64('2015-12-30'), 'pressure', 
+                   overwrite=False, cache='/work/noaa/co2/jhollo/TM5_CT2022_gridded_vars')
+    # get average
+    p = p.sel(lat=45, method='nearest').mean(('time', 'lon')).sel(lev=lev).values
+    return p/100
+
 
 # -------------------------------------------------------------------------
 
@@ -198,32 +239,38 @@ def interface_to_mid(x, idim='boundary'):
 # -------------------------------------------------------------------------
 
 
-def hybrid_ps_to_p(ps, A, B):
+def hybrid_ps_to_p(ps, A, B, pref=None):
     '''
     Builds gridded pressure given a 2D surface pressure and A and B hybrid 
     coefficients defined on level interfaces. This uses the GEOS-Chem 
     formulation, which is (A + B*PS), rather than the common (A*P0 + B*PS)
-    (i.e. A has units of hPa here)
+    (i.e. A has units of pressure here)
 
     Parameters
     ----------
     ps : xarray DataArray
-        surface pressure with dimensions of at least 'lat','lon'
+        surface pressure in Pa with dimensions of at least 'lat','lon'
     A  : xarray DataArray
         A coefficient (hPa) with dimension 'ilev'
     B : xarray DataArray
         B coefficient (dimensionless) with dimension 'ilev'
+    pref : array-like
+        optional reference pressure levels corresponding to the 
+        midpoint model levels that result. If not supplied, then
+        the pressure is returned with a 'lev' dimension with no
+        coordinate data. If supplied, then these values are 
+        added as the 'lev' coordinates.
 
     Returns
     -------
     The pressure on the input surface pressure dimensions, with an added vertical
-    dimension 'lev'
+    dimension 'lev', in Pa
     '''
 
     if(len(A) != len(B)):
         raise RuntimeError('length of A and B must be equal')
 
-    p_edges = A + B * ps
+    p_edges = (A*100) + B * ps
     p = (p_edges + p_edges.shift(ilev=-1)) / 2
     p = p.isel(ilev=slice(0, -1))
     
@@ -235,6 +282,10 @@ def hybrid_ps_to_p(ps, A, B):
     p.attrs.pop('long_name', None) 
     p.attrs.pop('standard_name', None)
     p.attrs.pop('gamap_category', None)
+
+    if(pref is not None):
+        p = p.assign_coords(lev=pref)
+
     return p
     
 
@@ -284,6 +335,8 @@ def align_datasets(x, xv, y, yv, v, vertical='pressure'):
         that the quantities x and y vary approximately linearly across isentropes.
     '''
 
+    # Enforce
+
     # Verify dimensions, transpose to matching order
     if(set(x.dims) != set(y.dims) or set(xv.dims) != set(yv.dims) or \
        set(x.dims) != set(xv.dims)):
@@ -292,22 +345,16 @@ def align_datasets(x, xv, y, yv, v, vertical='pressure'):
     yv = yv.transpose(*y.dims)
     xv = xv.transpose(*y.dims)
     
-    # reindex time
-    if('time' in x.dims):
-        time = x.time.intersection(y.time)
-        x  = x.reindex(time=time)
-        xv = xv.reindex(time=time)
-        y  = y.reindex(time=time)
-        yv = yv.reindex(time=time)
-    
     # Verify matching coordinates
     for dim in x.dims:
-        if(not x[dim].identical(xv[dim]) or not x[dim].identical(xv[dim])):
+        if(not arrays_equal(x[dim], xv[dim])):
             raise RuntimeError(f'Coordinates of x and xv must match in dimension {dim}')
-        if(not y[dim].identical(xv[dim]) or not y[dim].identical(yv[dim])):
+        if(not arrays_equal(y[dim], yv[dim])):
             raise RuntimeError(f'Coordinates of y and yv must match in dimension {dim}')
-        if(not x[dim].identical(y[dim])):
-            if(dim != 'time'):
+        if(not arrays_equal(x[dim], y[dim])):
+            if(dim in ['lat', 'lon', 'lev']):
+                continue
+            elif(dim != 'time'):
                 raise RuntimeError(f'Coordinates of x and y must match in dimension {dim}')
             else:
                 warnings.warn('Datasets x and y do not have matching coordiantes in the time'\
@@ -319,15 +366,21 @@ def align_datasets(x, xv, y, yv, v, vertical='pressure'):
                 yv = yv.reindex(time=time)
 
     # do horizontal interpolation x -> y, xv -> y
+    print('doing horizontal regrid (1/2)...')
     x  = ctb.conservative_regrid(y, x)
+    print('doing horizontal regrid (2/2)...')
     xv = ctb.conservative_regrid(y, xv)
     
     # do vertical interpolation
     if(vertical == 'pressure'):
+        print('doing vertical remap (1/2)...')
         x = ctb.log_interp_to_isobars(x, xv, v)
+        print('doing vertical remap (2/2)...')
         y = ctb.log_interp_to_isobars(y, yv, v)
     elif(vertical == 'theta'):
+        print('doing vertical remap (1/2)...')
         x = ctb.linear_interp_to_isentropes(x, xv, v)
+        print('doing vertical remap (2/2)...')
         y = ctb.linear_interp_to_isentropes(y, yv, v)
 
     return x, y
@@ -343,7 +396,7 @@ def column_average(mf, outfile=None, overwrite=False):
     Parameters
     ----------
     mf : xarray DataArray
-        input concentration in kg/kg. Must have a vertical dimension 'lev' 
+        input concentration in kg/kg. Must have a vertical dimension 'lev' or 'plev' 
     outfile : str
         path to file at which to save the result. If file already exists, then read from 
         the file instead of computing the column average from scratch.
@@ -361,16 +414,24 @@ def column_average(mf, outfile=None, overwrite=False):
         return xr.open_dataset(outfile)[varname]
     except FileNotFoundError:
         pass
-
-    p  = mf.lev.values
-    dp = np.array([np.diff(p_to_p_interfaces(pi)) for pi in p])
     
-    dim_idx        = np.where(np.array(mf.dims) == 'lev')[0][0]
-    shape          = np.ones(mf.ndim)
-    shape[dim_idx] = mf.shape[dim_idx]
-    dp             = dp.reshape(shape.astype(int))
+    try:
+        p = mf.lev
+        dim = 'lev'
+    except AttributeError:
+        p = mf.plev
+        dim = 'plev'
     
-    X      = (mf * dp).sum('lev') / np.sum(dp, axis=dim_idx)
+    # approximate interface pressures as logarithmic average
+    p_int = np.exp((np.log(p) + np.log(p.shift({dim:-1}))) / 2)
+    dp    = p_int - p_int.shift({dim:1})
+    
+    #dim_idx        = np.where(np.array(mf.dims) == dim)[0][0]
+    #shape          = np.ones(mf.ndim)
+    #shape[dim_idx] = mf.shape[dim_idx]
+    #dp             = dp.reshape(shape.astype(int))
+    
+    X      = (mf * dp).sum(dim) / dp.sum(dim)
     X.name = varname
     if(outfile is not None):
         X.to_netcdf(outfile)
@@ -410,7 +471,7 @@ def column_center_of_mass(mf, outfile=None, overwrite=False):
 
     # --- pressure thickness (same as column_average)
     p  = mf.lev.values
-    dp = np.array([np.diff(p_to_p_interfaces(pi)) for pi in p])
+    dp = np.array([np.diff(gc_p_to_p_interfaces(pi)) for pi in p])
 
     dim_idx = np.where(np.array(mf.dims) == 'lev')[0][0]
     shape          = np.ones(mf.ndim)
