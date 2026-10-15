@@ -13,7 +13,7 @@ See docstrings at function definitions for arguments and usage.
    conda activate climo_env
    ```
 
-2. Follow the installation instructions for the required `climate_utils` package at https://github.com/jhollowed/climate\_utils
+2. Follow the installation instructions for the required `climate_utils` package at https://github.com/jhollowed/climate_utils
 
 3. Clone the repo
 
@@ -36,21 +36,21 @@ See docstrings at function definitions for arguments and usage.
 
 Import the functions as
 
-    ```python
-    import inversion_tools as it
-    ```
+```python
+import inversion_tools as it
+```
 
 Define a `Reader` object as for e.g. the ocean's residual carbon flux:
 
-    ```python
-    reader = it.Reader(source='ocean', component='residual', processing_dir='/your/preferred/location/', quiet=False)
-    ```
+```python
+reader = it.Reader(source='ocean', component='residual', processing_dir='/your/preferred/location/', quiet=False)
+```
 
 and then read prior or posterior mole fractions for e.g. TransCom region 14 during the first 6 months of 2016, at the equator:
 
-    ```python
-    state_prior     = reader.read_prior_mf(region=14, start_date='2016-01', end_date='2016-06', lat=0)
-    state_posterior = reader.read_posterior_mf(sample='mean', region=14, start_date='2016-01', end_date='2016-06', lat=0)
-    ```
+```python
+state_prior     = reader.read_prior_mf(region=14, start_date='2016-01', end_date='2016-06', lat=0)
+state_posterior = reader.read_posterior_mf(sample='mean', region=14, start_date='2016-01', end_date='2016-06', lat=0)
+```
 
 Currently working for GC only; work-in-progress to include TM5.
