@@ -396,12 +396,13 @@ def column_average(mf, outfile=None, overwrite=False):
     Parameters
     ----------
     mf : xarray DataArray
-        input concentration in kg/kg. Must have a vertical dimension 'lev' or 'plev' 
-    outfile : str
-        path to file at which to save the result. If file already exists, then read from 
-        the file instead of computing the column average from scratch.
+        Input concentration in kg/kg. Must have a vertical dimension 'lev' or 'plev' 
+    outfile : str, optional
+        Path to file at which to save the result. If file already exists, then read from 
+        the file instead of computing the column average from scratch. Default is None, 
+        in which case this step is skipped.
     overwrite : bool
-        whether or not to overwrite the file specified at outfile, if exists
+        whether or not to overwrite the file specified at outfile, if exists.
 
     Returns
     -------

@@ -17,6 +17,7 @@ import pandas as pd
 import xarray as xr
 import urllib.request
 from timeit import default_timer
+import climate_utils.climate_toolbox as ctb
 
 # ---- imports from this package
 from .utils import *
@@ -143,12 +144,10 @@ def read_tm5(source, component, region, nmonths, start_date=None,
 
 # -------------------------------------------------------------------------
 
-def read_tm5_meteo(start, end, var, overwrite=False,
-                   cache = '/work/noaa/co2/jhollo/TM5_CT2022_gridded_vars'):
+def read_tm5_meteo(start, end, var, overwrite=False,cache = tm5_meteo_cache):
     return read_meteo('TM5', start, end, var, overwrite, cache)
 
-def read_gc_meteo(start, end, var, overwrite=False,
-                  cache = '/work/noaa/co2/jhollo/GC_MERRA2_gridded_vars'):
+def read_gc_meteo(start, end, var, overwrite=False, cache = gc_meteo_cache):
     return read_meteo('GC', start, end, var, overwrite, cache)
 
 def read_meteo(model, start, end, var, overwrite, cache):
@@ -194,10 +193,6 @@ def read_meteo(model, start, end, var, overwrite, cache):
         return theta
 
     print(f'reading {model} {var}...')
-
-    tm5_url = 'https://gml.noaa.gov/aftp/products/carbontracker/co2/CT2022/molefractions/co2_total/'
-    gc_dir  = f'{forward_dir}/data/GEOS_Chem/ExtData/GEOS_2x2.5/MERRA2'
-
     dates     = np.arange(start, end + np.timedelta64(1, 'D'), dtype='datetime64[D]')
     all_years = dates.astype('datetime64[Y]').astype(int) + 1970
     years     = np.unique(all_years)
@@ -247,7 +242,7 @@ def read_meteo(model, start, end, var, overwrite, cache):
                     except FileNotFoundError:
                         # download from NOAA, trim variables, cache
                         iprint(f'{prog} downloading data from NOAA...')
-                        urllib.request.urlretrieve(f'{tm5_url}/{file}', downloaded)
+                        urllib.request.urlretrieve(f'{tm5_meteo_url}/{file}', downloaded)
                         vars_to_save = ['temperature' if v == 'theta' else v for v in valid_vars]
                         iprint(f'{prog} caching select variables...')
                         downloaded_vars = xr.open_dataset(downloaded)[vars_to_save]
@@ -255,7 +250,7 @@ def read_meteo(model, start, end, var, overwrite, cache):
                         downloaded_vars.to_netcdf(downloaded)
                 elif(model == 'GC'):
                     _, month, day = str(date).split("-")
-                    file = f'{gc_dir}/{year}/{month}/MERRA2.{year}{month}{day}.I3.2x25.nc4'
+                    file = f'{gc_meteo_dir}/{year}/{month}/MERRA2.{year}{month}{day}.I3.2x25.nc4'
 
                 # grab or compute the requested variable
                 # ------ temperature
@@ -278,26 +273,28 @@ def read_meteo(model, start, end, var, overwrite, cache):
                         p = p.resample(time="1D").mean()
                         p = p.rename(tm5_horz_coords)
                         # move pressure from interface to midpoint levels
-                        p = interface_to_mid(p)
+                        #p = interface_to_mid(p)
+                        p = ctb.level_interfaces_to_midpoints(p, idim='boundary')
                     elif(model == 'GC'):
                         iprint(f'{prog} reading surface pressure...')
                         # first get daily average of surface presssure
                         ps = xr.open_dataset(file)['PS']
                         ps = ps.resample(time="1D").mean()
                         # then convert to gridded pressure using the hybrid coefficients A,B
+                        # Note: GC uses a convention where A is defined in hPa; divide by P0
+                        # to port to the dimensionless convention of CESM
                         iprint(f'{prog} building 3D pressure...')
                         edges   = GC_VERT[GC_VERT['eta_edge'].notna()].reset_index(drop=True)
                         mid     = GC_VERT[GC_VERT['eta_mid'].notna()].reset_index(drop=True)
                         A       = xr.DataArray(edges['Ap'].values, dims='ilev')
                         B       = xr.DataArray(edges['Bp'].values, dims='ilev')
-                        p       = hybrid_ps_to_p(ps, A, B)
+                        #p       = hybrid_ps_to_p(ps, A, B)
+                        p       = ctb.compute_hybrid_pressure(ps, A/(p0*100), B)
                         # needs to be reversed to match GC data
                         #p = p.isel({'lev': slice(None, None, -1)})
                         # remove extraneous attributes
-                        p.attrs.pop("long_name", None)
                         p.attrs.pop("standard_name", None)
-                    p = p.rename('pressure')
-                    p.attrs['comment'] = 'air pressure at level midpoints' 
+                        p.attrs.pop('gamap_category', None)
                     year_data.append(p)
 
             # write out this year to nc
@@ -364,79 +361,100 @@ class Reader:
     # ----------------------------------------------------------------------------------
     # ----------------------------------------------------------------------------------
 
-    def read_mf(self, **kwargs):
-        if('region' not in kwargs.keys()):
-            raise RuntimeError('"region" must be supplied for read_mf()')
-        if('data_class' in kwargs.keys()):
-            raise RuntimeError('"data_class" not a valid arg for read_mf()')
-        kwargs['data_class'] = 'mf'
-        return self._read_transport_data(**kwargs)
+    def read_prior_mf(self, region=None, start_date=None, end_date=None, 
+                      lev=None, lat=None, lon=None, pft=None):
+        kwargs = locals()
+        del kwargs['self']
+        return self._read_transport_data(**kwargs, data_class='mf')
     
-    def read_flux(self, **kwargs):
-        if('region' not in kwargs.keys()):
-            raise RuntimeError('"region" must be supplied for read_flux()')
-        if('data_class' in kwargs.keys()):
-            raise RuntimeError('"data_class" not a valid arg for read_flux()')
-        kwargs['data_class'] = 'flux'
-        return self._read_transport_data(**kwargs)
+    def read_prior_flux(self, region=None, start_date=None, end_date=None, 
+                        lev=None, lat=None, lon=None, pft=None):
+        kwargs = locals()
+        del kwargs['self']
+        return self._read_transport_data(**kwargs, data_class='mf')
     
-    def read_mf_control(self, **kwargs):
-        if('region' in kwargs.keys()):
-            raise RuntimeError('"region" not a valid argument for read_mf_control()')
-        if('data_class' in kwargs.keys()):
-            raise RuntimeError('"data_class" not a valid arg for read_mf_control()')
-        kwargs['data_class'] = 'mf'
-        kwargs['region']     = None
-        return self._read_transport_data(**kwargs)
+    def read_posterior_mf(self, region=None, start_date=None, end_date=None, 
+                          lev=None, lat=None, lon=None, pft=None, sample='mean'):
+        kwargs = locals()
+        del kwargs['self']
+        return self._read_transport_data(**kwargs, data_class='mf')
+     
+    def read_prior_mf_control(self, start_date=None, end_date=None, 
+                              lev=None, lat=None, lon=None, pft=None):
+        kwargs = locals()
+        del kwargs['self']
+        return self._read_transport_data(**kwargs, data_class='mf', region=None)
     
-    def read_flux_control(self, **kwargs):
-        if('region' in kwargs.keys()):
-            raise RuntimeError('"region" not a valid argument for read_flux_control()')
-        if('data_class' in kwargs.keys()):
-            raise RuntimeError('"data_class" not a valid arg for read_flux_control()')
-        kwargs['data_class'] = 'flux'
-        kwargs['region']     = None
-        return self._read_transport_data(**kwargs)
+    def read_prior_flux_control(self, start_date=None, end_date=None, 
+                                lev=None, lat=None, lon=None, pft=None):
+        kwargs = locals()
+        del kwargs['self']
+        return self._read_transport_data(**kwargs, data_class='flux', region=None)
 
     # ----------------------------------------------------------------------------------
     # ----------------------------------------------------------------------------------
     
-    def _read_transport_data(self, region=None, start_date=None, end_date=None, 
-                             lev=None, lat=None, lon=None, pft=None, data_class='mf'):
+    def _read_transport_data(self, sample=None, region=None, start_date=None, end_date=None, 
+                             lev=None, lat=None, lon=None, pft=None, 
+                             data_class='mf'):
         '''
         Reads and returns mole fraction data for a chosen TransCom region, and 
         at specified position, or globally.
 
         Parameters
         ----------
+        sample : int or str, optional
+            If provided, posterior is returned. If not provided, prior is returned.
+            If an int, this arg specifies the posterior scale factor sample to use for
+            the prior to posterior scaling, from 1 to 1000
+            If a string, then the options are:
+            - "mean": the mean scale factor is used for the prior to posterior scaling.
+            - "stats": all scale factor samples 1 to 1000 are used to compute a mean and
+                       standard deviation.
         region : int, optional
             The TransCom region. Default is None, in which case the control runs are read.
         start_date : str, optional
             The starting date of the data to retrieve, in YYYY-MM format.
-            Required when component!='residual'.
-            When component='residual', this specifies both the residual pulse emission date,
+            Required when component!="residual".
+            When component="residual", this specifies both the residual pulse emission date,
             as well as the start date of the retrieved data range.
         end_date : str, optional
             The ending date of the data to retrieve, in YYYY-MM format. This date is
             inclusive, meaning that e.g. start_date=2015-01, end-date=2015-02, then two
             months of data will be retruned.
-            If component='residual' and data_class='flux', then the flux is set to zero for 
+            If component="residual" and data_class="flux", then the flux is set to zero for 
             all times outside of the emission month.
-        lev : int, optional
-            Vertical level. If not provided, then all the full vertical domain is returned.
-        lat : float, optional
+        lev : int or str, optional
+            Vertical level. If not provided, then all the full vertical domain is returned
+            when data_class = "mf". When data_class = "flux", this arg is ignored.
+            If an int, then this arg specifies the level index to select.
+            If a str, options are:
+            - "XCO2": the column-averaged mole fraction is returned
+        lat : float, slice, list, or str, optional
             Latitude to select the data on.
+            If a float, then the closest matching position in latitude is selected.
+            If a slice, then the latitudes within the slice are selected.
+            If a list, then the latitudes within the bounds are selected and averaged. Must be an 
+            ascending list of length 2
+            If a str, options are:
+            - "mean" : the average of the full latitude range is taken.
         lon : float, optional
             Longitude to select the data on.
+            If a float, then the closest matching position in longitude is selected.
+            If a slice, then the longitudes within the slice are selected.
+            If a list, then the longitudes within the bounds are selected and averaged. Must be an 
+            ascending list of length 2
+            If a str, options are:
+            - "mean" : the average of the full latitude range is taken.
         pft : int, optional
             An integer from 1 to 15 giving the plant functional type. If source is not 
-            'gpp' or 'resp', this is ignored. If source is 'gpp' or 'resp' and 'pft' is 
+            "gpp" or "resp", this is ignored. If source is "gpp" or "resp" and "pft" is 
             not supplied, then all pft's will be read and summed. Else, the specified 
             pft is returned.
         data_class : str, optional
             Whether to return the mole fraction or flux data. Options are:
-            'mf'
-            'flux'
+            "mf"
+            "flux"
     
         Returns
         -------
@@ -484,7 +502,7 @@ class Reader:
                 print(f'---------- reading data for year {year} ----------')
             
             data[i] = self._get_mf_or_flux_for_year(year, region, lev, lat, lon, 
-                                                    pft, data_class)
+                                                    pft, data_class, sample)
             # slice on time
             data[i] = data[i].sel(time=slice(start_date, end_date))
             if(data[i].time.size == 0):
@@ -495,9 +513,35 @@ class Reader:
         # remove entries for data that could not be read
         data = [d for d in data if d is not None]
 
-        # ------ concatenate and return ------
+        # ------ concatenate ------
         if(not self.quiet): print(f'concatenating {len(data)} DataArrays')
-        return xr.concat(data, dim='time')
+        data = xr.concat(data, dim='time')
+        if(sample is None):
+            return data
+        
+        # ------ scale to posterior if requested ------
+        # check argument
+        if(type(sample) == str and sample != 'mean'):
+            raise RuntimeError('sample must be an int from 1 to 1000, or the string "mean"')
+        if(type(sample) == int and (sample < 1 or sample > 1000)):
+            raise RuntimeError('sample must be an int from 1 to 1000, or the string "mean"')
+
+        # look up row in scale factor table
+        source_str     = {'gpp':'bio_gpp', 'resp':'bio_resp_tot', 'ocean':'ocean'}[self.source]
+        if(pft is None): pft_str = ''
+        else:            pft_str = f'_pft{pft:02d}'
+        date_str       = [f'_month{start_date}', ''][self.component != 'residual']
+
+        basis_function = f'{source_str}_{self.component}{pft_str}_regionRegion{region:02d}{date_str}'
+        alpha     = pd.read_csv(f'{gc_alpha_dir}/state_gc_IS.csv')
+
+        # extract scale factor, scale, and return
+        alpha_row = alpha[alpha['basis_function'] == basis_function]
+        if(sample != 'mean'):
+            sample = f'sample{sample:04d}'
+        scale_factor = float(alpha_row[sample].iloc[0])
+        print(f'scaling data by {scale_factor} for basis function {basis_function}')
+        return data * (1+scale_factor)
 
 
     # -------------------------------------------------------------------------
@@ -505,7 +549,7 @@ class Reader:
 
 
     def _get_mf_or_flux_for_year(self, year, region, lev, lat, lon, pft, 
-                                 data_class, component=None, quiet=None):
+                                 data_class, sample, component=None, quiet=None):
         '''
         Reads and returns the mole fraction and/or flux data for the specified year.
         For all arguments not described here, see the docstring of _read_transport_data()
@@ -583,7 +627,7 @@ class Reader:
                 if(not quiet):
                     print(f'========== PFT {pfti} ==========')
                 kwargs = {'year':year, 'region':region, 'lev':lev, 'lat':lat, 'lon':lon, 'pft':pfti,
-                          'data_class':data_class}
+                          'data_class':data_class, 'sample':sample}
                 if(i==0):
                     comp_data = self._get_mf_or_flux_for_year(**kwargs)
                 else:
@@ -602,7 +646,7 @@ class Reader:
                 if(not quiet):
                     print(f'========== seasonal component {seasonal_comps[i]} ==========')
                 kwargs = {'year':year, 'region':region, 'lev':lev, 'lat':lat, 'lon':lon, 'pft':pft,
-                          'component':seasonal_comps[i], 'data_class':data_class}
+                        'component':seasonal_comps[i], 'data_class':data_class, 'sample':sample}
                 if(i==0):
                     comp_data = self._get_mf_or_flux_for_year(**kwargs)
                 else:
@@ -631,7 +675,6 @@ class Reader:
                 raise RuntimeError('no file matching these parameters! Double check that '\
                                    'specified flux source is nonzero in the specified region')
 
-
         # ------ read data ------
         if(not quiet):
             print(f'reading {files[0].split("/")[-1]}...')
@@ -639,15 +682,50 @@ class Reader:
 
         # ------ do slicing ------
         if(lat is not None):
-            if(not quiet): print(f'slicing data on lat={lat}...')
-            data = data.sel(lat=lat, method='nearest')
+            if(type(lat) == float):
+                if(not quiet): print(f'selecting data nearest lat={lat}...')
+                data = data.sel(lat=lat, method='nearest')
+            elif(type(lat) == slice):
+                if(not quiet): print(f'slicing data on lat={lat}...')
+                data = data.sel(lat=lat)
+            elif(type(lat) == list):
+                if(len(lat)!=2 or sorted(lat)!=lat):
+                    raise RuntimeError('if type of lat is a list, then must be ascending and length-2')
+                if(not quiet): print(f'averaging data over lat={lat}...')
+                data = data.sel(lat=slice(lat))
+                data = ctb.meridional_weighted_mean(data)
+            elif(lat == 'mean'):
+                if(not quiet): print(f'averaging data over all lat...')
+                data = ctb.meridional_weighted_mean(data)
+            else:
+                raise RuntimeError('arg lat does not match expected input types; please check')
+                
         if(lon is not None):
-            if(not quiet): print(f'slicing data on lon={lon}...')
-            data = data.sel(lon=lon, method='nearest')
+            if(type(lon) == float):
+                if(not quiet): print(f'selecting data nearest lon={lat}...')
+                data = data.sel(lon=lon, method='nearest')
+            if(type(lon) == slice):
+                if(not quiet): print(f'slicing data on lon={lon}...')
+                data = data.sel(lon=lon)
+            if(type(lon) == list):
+                if(len(lon)!=2 or sorted(lon)!=lon):
+                    raise RuntimeError('if type of lon is a list, then must be ascending and length-2')
+                if(not quiet): print(f'averaging data over lon={lon}...')
+                data = data.sel(lon=slice(lon)).mean('lon')
+            if(lon == 'mean'):
+                if(not quiet): print(f'averaging data over all lon...')
+                data = data.mean('lon')
+            else:
+                raise RuntimeError('arg lon does not match expected input types; please check')
+
         if(lev is not None):
-            plev, zlev = lev_to_p(lev), lev_to_z(lev)
-            if(not quiet): print(f'slicing data on lev={lev} ({plev} hPa // {zlev} km)...')
-            data = data.isel(lev=lev)
+            if(type(lev) == float or type(lev) == int):
+                plev, zlev = gc_lev_to_p(lev), gc_lev_to_z(lev)
+                if(not quiet): print(f'slicing data on lev={lev} ({plev} hPa // {zlev} km)...')
+                data = data.isel(lev=lev)
+            elif(lev == 'XCO2')
+                if(not quiet): print(f'computing XCO2...')
+                data = data.isel(lev=lev)
 
         # ------ do scaling and return ------
         data = scaling(data)
