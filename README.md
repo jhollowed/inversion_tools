@@ -15,15 +15,15 @@ See docstrings at function definitions for arguments and usage.
 
 2. Follow the installation instructions for the required `climate_utils` package:
 
-```
-https://github.com/jhollowed/climate_utils
-```
+    ```
+    https://github.com/jhollowed/climate_utils
+    ```
 
 3. Clone the repo
 
-```
-git clone git@github.com:jhollowed/inversion_tools.git
-```
+    ```
+    git clone git@github.com:jhollowed/inversion_tools.git
+    ```
 
 4. Locally install the package
 
@@ -40,21 +40,21 @@ git clone git@github.com:jhollowed/inversion_tools.git
 
 Import the functions as
 
-```python
-import inversion_tools as it
-```
+    ```python
+    import inversion_tools as it
+    ```
 
 Define a `Reader` object as for e.g. the ocean's residual carbon flux:
 
-```
-reader = it.Reader(source='ocean', component='residual', processing_dir='/your/preferred/location/', quiet=False)
-```
+    ```
+    reader = it.Reader(source='ocean', component='residual', processing_dir='/your/preferred/location/', quiet=False)
+    ```
 
 and then read prior or posterior mole fractions for e.g. TransCom region 14 during the first 6 months of 2016, at the equator:
 
-```
-state_prior     = reader.read_prior_mf(region=14, start_date='2016-01', end_date='2016-06', lat=0)
-state_posterior = reader.read_posterior_mf(sample='mean', region=14, start_date='2016-01', end_date='2016-06', lat=0)
-```
+    ```
+    state_prior     = reader.read_prior_mf(region=14, start_date='2016-01', end_date='2016-06', lat=0)
+    state_posterior = reader.read_posterior_mf(sample='mean', region=14, start_date='2016-01', end_date='2016-06', lat=0)
+    ```
 
 Currently working for GC only; work-in-progress to include TM5.
