@@ -323,7 +323,7 @@ def read_meteo(model, start, end, var, overwrite, cache):
 
 # -------------------------------------------------------------------------
 
-class Reader:
+class WOMBAT_Reader:
     '''
     Interface for reading transport forward run mole fractions and fluxes
 
