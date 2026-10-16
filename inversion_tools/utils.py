@@ -52,6 +52,30 @@ def arrays_equal(x, y):
 
 
 # -------------------------------------------------------------------------
+    
+
+def check_inputs(model=None, obs=None, src=None, component=None, region=None, component=None, pft=None):
+    '''
+    Verifies that one or more input arguments is a valid choice for WOMBAT basis functions.
+    '''
+
+    if(model is not None and model not in valid_models):
+        raise ValueError(f'model must be one of {valid_models}, not {model}')
+    if(obs is not None and obs not in valid_obs):
+        raise ValueError(f'obs must be one of {valid_obs}, not {obs}')
+    if(src is not None and src not in valid_sources):
+        raise ValueError(f'source must be one of {valid_sources}, not {source}')
+    if(component is not None and component not in valid_components):
+        raise ValueError(f'component must be one of {valid_components}, not {component}')
+    if(region is not None and region not in region):
+        raise ValueError(f'region must be one of {valid_regions}, not {region}')
+    if(component is not None and component not in valid_components):
+        raise ValueError(f'component must be one of {valid_components}, not {component}')
+    if(pft is not None and pft not in valid_pfts):
+        raise ValueError(f'pft must be one of {valid_pfts}, not {pft}')
+
+
+# -------------------------------------------------------------------------
 
 
 def tm5_lev_to_p(lev):
@@ -211,6 +235,82 @@ def gc_p_to_p_interfaces(p):
         raise RuntimeError(f'p must be between {edge[0]} and {edge[-1]} hPa')
     idx  = np.searchsorted(edge, p)
     return [edge[idx-1], edge[idx]]
+
+
+# -------------------------------------------------------------------------
+
+
+def get_posterior_alpha(model, obs, sample, source, component, region, pft=None):
+    '''
+    Extracts the WOMBAT posterior alpha scale factor for a choice of observations
+    and basis function, and returns either a single sample, the mean, the mean and 
+    standard deviation, or the full set of 1000 samples.
+
+    Parameters
+    ----------
+    model : str
+        Which transport model to read the posterior scale factor for.
+        Must be either 'GC' or 'TM5'.
+    obs : str
+       Which observational optimization to read the posterior scale factor from.
+       Must be either 'IS', 'LNLG', 'LNLGIS', or 'LNLGOGIS'.
+    sample : int or str
+        If an integer, specifies the sample to return between 1 and 1000.
+        If a string, the options are:
+        - 'mean': returns the mean scale factor
+        - 'all' : returns the full set of 1000 samples as a list
+    source : str
+        The emission source associated with the basis function.
+        Must be either "gpp", "resp", or "ocean"
+    component : str
+        The basis function component. Must be either
+        "intercept", "trend", "residual", "sin12_1", "sin12_2", "sin12_3",
+        "cos12_1", "cos12_2", or "cos12_3"
+    region : int
+        The TransCom region associated with the basis function. Must be an integer 
+        between 1 and 22.
+    pft : int, optional
+        The PFT associated with teh basis function, in the case that source = 'resp' or 'gpp'
+
+    Returns
+    -------
+    float or list of floats
+        The scale factor sample, mean, or distribution, according to the arg "sample".
+    '''
+    
+    # ------ check inputs
+    check_inputs(model, obs, src, component, region, component, pft)
+
+    if(sample is not None):
+        if(type(sample) == int):
+            if(sample < 1 or sample > 1000):
+                raise ValueError('alpha sample must be between 1 and 1000')
+        elif(type(sample) == str):
+            if(sample not in ['mean', 'all']):
+                raise ValueError('sample option not recognized; must be "mean" or "all" and an integer')
+
+    # ------ get basis function name
+    source_str     = shorthand_comps[source]
+    pft_str        = [f'_pft{pft:02d}', ''][pft is None]
+    date_str       = [f'_month{start_date}', ''][self.component != 'residual']
+    basis_function = f'{source_str}_{self.component}{pft_str}_regionRegion{region:02d}{date_str}'
+
+    # ------ get row from alpha table
+    if(model == 'GC'): alpha_file  = f'{gc_alpha_dir}/state_gc_{obs}.csv'
+    if(model == 'TM5'): alpha_file = f'{tm5_alpha_dir}/state_tm5_{obs}.csv'
+    alpha_table = pd.read_csv(alpha_file)
+    alpha_row   = alpha_table[alpha_table['basis_function'] == basis_function]
+
+    # ------- extract requested sample and return
+    if(type(sample) == int): sample_str = f'sample{sample:04d}'
+    else:                    sample_str = sample
+ 
+    if(type(sample) == int):
+        return alpha_row[f'sample{sample:04d}'].iloc[0]
+    elif(sample == 'mean'):
+        return alpha_row[sample].iloc[0]
+    elif(sample == 'all'):
+        return np.array(alpha_row.iloc[0][2:], dtype=float)
  
 
 # -------------------------------------------------------------------------
