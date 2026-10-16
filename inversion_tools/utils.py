@@ -234,60 +234,7 @@ def interface_to_mid(x, idim='boundary'):
     x = x.isel({idim:slice(0, -1)})
     x = x.rename({idim:'lev'})
     return x
-
-
-# -------------------------------------------------------------------------
-
-
-def hybrid_ps_to_p(ps, A, B, pref=None):
-    '''
-    Builds gridded pressure given a 2D surface pressure and A and B hybrid 
-    coefficients defined on level interfaces. This uses the GEOS-Chem 
-    formulation, which is (A + B*PS), rather than the common (A*P0 + B*PS)
-    (i.e. A has units of pressure here)
-
-    Parameters
-    ----------
-    ps : xarray DataArray
-        surface pressure in Pa with dimensions of at least 'lat','lon'
-    A  : xarray DataArray
-        A coefficient (hPa) with dimension 'ilev'
-    B : xarray DataArray
-        B coefficient (dimensionless) with dimension 'ilev'
-    pref : array-like
-        optional reference pressure levels corresponding to the 
-        midpoint model levels that result. If not supplied, then
-        the pressure is returned with a 'lev' dimension with no
-        coordinate data. If supplied, then these values are 
-        added as the 'lev' coordinates.
-
-    Returns
-    -------
-    The pressure on the input surface pressure dimensions, with an added vertical
-    dimension 'lev', in Pa
-    '''
-
-    if(len(A) != len(B)):
-        raise RuntimeError('length of A and B must be equal')
-
-    p_edges = (A*100) + B * ps
-    p = (p_edges + p_edges.shift(ilev=-1)) / 2
-    p = p.isel(ilev=slice(0, -1))
-    
-    p = p.rename('pressure')
-    p = p.rename({'ilev':'lev'})
-    p.attrs['comment'] = 'air pressure at level midpoints '\
-                         '(average of interface pressures, '\
-                         'where each interface pressure is P = A + B*PS)'
-    p.attrs.pop('long_name', None) 
-    p.attrs.pop('standard_name', None)
-    p.attrs.pop('gamap_category', None)
-
-    if(pref is not None):
-        p = p.assign_coords(lev=pref)
-
-    return p
-    
+ 
 
 # -------------------------------------------------------------------------
 

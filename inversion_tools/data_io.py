@@ -144,10 +144,10 @@ def read_tm5(source, component, region, nmonths, start_date=None,
 
 # -------------------------------------------------------------------------
 
-def read_tm5_meteo(start, end, var, overwrite=False,cache = tm5_meteo_cache):
+def read_tm5_meteo(start, end, var, overwrite=False, cache=tm5_meteo_cache):
     return read_meteo('TM5', start, end, var, overwrite, cache)
 
-def read_gc_meteo(start, end, var, overwrite=False, cache = gc_meteo_cache):
+def read_gc_meteo(start, end, var, overwrite=False, cache=gc_meteo_cache):
     return read_meteo('GC', start, end, var, overwrite, cache)
 
 def read_meteo(model, start, end, var, overwrite, cache):
@@ -172,19 +172,24 @@ def read_meteo(model, start, end, var, overwrite, cache):
         returned if it exists.
     '''
 
-    valid_vars = ['pressure', 'temperature', 'theta']
-    if(var not in valid_vars):
-        raise RuntimeError(f'var must be one of {valid_vars}')
+    # ---- check model and var inputs
     valid_models = ['TM5', 'GC']
     if(model not in valid_models):
         raise RuntimeError(f'model must be one of {valid_models}')
+    
+    tm5_valid_vars = ['pressure', 'temperature', 'theta', 'interface_pressure']
+    gc_valid_vars  = ['pressure', 'temperature', 'theta', 'interface_pressure', 'surface_pressure']
+    if(model=='GC' and var not in gc_valid_vars):
+        raise RuntimeError(f'GC var must be one of {valid_vars}')
+    if(model=='TM5' and var not in tm5_valid_vars):
+        raise RuntimeError(f'TM5 var must be one of {valid_vars}')
 
     if(var == 'theta'):
         print(f'{model} potential temperature will be computed from pressure and temp...')
-        p     = read_meteo(model, start, end, 'pressure', overwrite, cache) / 100 # convert to hPa
-        t     = read_meteo(model, start, end, 'temperature', overwrite, cache)
+        p = read_meteo(model, start, end, 'pressure', overwrite, cache) / 100 # convert to hPa
+        t = read_meteo(model, start, end, 'temperature', overwrite, cache)
         print(f'computing potential temperature...')
-        theta = t*(p0/p)**kappa
+        theta = t*(P0/p)**KAPPA
         theta = theta.rename('potential_temperature')
         theta.attrs.pop("long_name", None)
         theta.attrs.pop("standard_name", None)
@@ -199,8 +204,9 @@ def read_meteo(model, start, end, var, overwrite, cache):
     all_data  = [0]*len(years)
     
     # TM5 data (CT2022) needs dimensions renamed
-    tm5_horz_coords = {'latitude':'lat', 'longitude':'lon'}
-    tm5_coords      = {'latitude':'lat', 'longitude':'lon', 'level':'lev'}
+    tm5_horz_coords      = {'latitude':'lat', 'longitude':'lon'}
+    tm5_coords           = {'latitude':'lat', 'longitude':'lon', 'level':'lev'}
+    tm5_interface_coords = {'latitude':'lat', 'longitude':'lon', 'boundary':'ilev'}
 
     # ------ First get data per requested year
     # For TM5, this means downloading files from the NOAA server. For GC, we read
@@ -230,7 +236,6 @@ def read_meteo(model, start, end, var, overwrite, cache):
             # loop through all dates in this year; download/read, average, concat
             for j,date in enumerate(year_dates):
                 prog   = f'({j+1}/{len(year_dates)})'
-                #if(j==0): print('\n')
                 iprint(f'{prog} processing date {date}')
 
                 if(model == 'TM5'):
@@ -248,62 +253,66 @@ def read_meteo(model, start, end, var, overwrite, cache):
                         downloaded_vars = xr.open_dataset(downloaded)[vars_to_save]
                         os.remove(downloaded)
                         downloaded_vars.to_netcdf(downloaded)
+                
                 elif(model == 'GC'):
                     _, month, day = str(date).split("-")
                     file = f'{gc_meteo_dir}/{year}/{month}/MERRA2.{year}{month}{day}.I3.2x25.nc4'
 
                 # grab or compute the requested variable
-                # ------ temperature
+                # ------ temperature ------
                 if(var == 'temperature'):
                     iprint(f'{prog} reading temperature...')
+                    
                     if(model == 'TM5'):
                         t = xr.open_dataset(downloaded)['temperature']
                         t = t.rename(tm5_coords)
+                    
                     elif(model == 'GC'):
                         t = xr.open_dataset(file)['T']
+                    
                     t = t.resample(time="1D").mean()
                     t = t.rename('temperature')
                     t.attrs['comment'] = 'temperature at level midpoints'
                     year_data.append(t)
-                # ------ pressure
-                elif(var=='pressure'):
+
+                # ------ pressure ------
+                elif(var=='pressure' or var=='interface_pressure' or var=='surface_pressure'):
+                    
                     if(model == 'TM5'):
                         iprint(f'{prog} reading pressure...')
                         p = xr.open_dataset(downloaded)[var]
                         p = p.resample(time="1D").mean()
-                        p = p.rename(tm5_horz_coords)
-                        # move pressure from interface to midpoint levels
-                        #p = interface_to_mid(p)
-                        p = ctb.level_interfaces_to_midpoints(p, idim='boundary')
+                        p = p.rename(tm5_interface_coords)
+                        if(var != 'interface_pressure'):
+                            # move pressure from interface to midpoint levels
+                            p = ctb.level_interfaces_to_midpoints(p)
+
                     elif(model == 'GC'):
                         iprint(f'{prog} reading surface pressure...')
                         # first get daily average of surface presssure
                         ps = xr.open_dataset(file)['PS']
                         ps = ps.resample(time="1D").mean()
+                        
                         # then convert to gridded pressure using the hybrid coefficients A,B
-                        # Note: GC uses a convention where A is defined in hPa; divide by P0
-                        # to port to the dimensionless convention of CESM
-                        iprint(f'{prog} building 3D pressure...')
-                        edges   = GC_VERT[GC_VERT['eta_edge'].notna()].reset_index(drop=True)
-                        mid     = GC_VERT[GC_VERT['eta_mid'].notna()].reset_index(drop=True)
-                        A       = xr.DataArray(edges['Ap'].values, dims='ilev')
-                        B       = xr.DataArray(edges['Bp'].values, dims='ilev')
-                        #p       = hybrid_ps_to_p(ps, A, B)
-                        p       = ctb.compute_hybrid_pressure(ps, A/(p0*100), B)
-                        # needs to be reversed to match GC data
-                        #p = p.isel({'lev': slice(None, None, -1)})
+                        if(var != 'surface_pressure'):
+                            iprint(f'{prog} building 3D pressure...')
+                            if(var == 'interface_pressure'): move_p = False
+                            else:                            move_p = True
+                            p = ctb.compute_hybrid_pressure(ps, GC_HYAI, GC_HYBI, p0=P0*100,
+                                                            move_to_midpoints=move_p)
                         # remove extraneous attributes
                         p.attrs.pop("standard_name", None)
                         p.attrs.pop('gamap_category', None)
+
                     year_data.append(p)
 
-            # write out this year to nc
+            # ------ write out this year to nc
             print('writing out...')
             year_data = xr.concat(year_data, dim='time')
             year_data.to_netcdf(cached)
         all_data[i] = year_data
 
-    # concatenate and trim all years of data
+    # ------ concatenate and trim all years of data
     print(f'concatenating and trimming data to '\
           f'({start.astype("datetime64[D]")}, {end.astype("datetime64[D]")})...')
     if(len(all_data)>1):
@@ -503,7 +512,7 @@ class Reader:
             
             data[i] = self._get_mf_or_flux_for_year(year, region, lev, lat, lon, 
                                                     pft, data_class, sample)
-            # slice on time
+            # ------ slice on time
             data[i] = data[i].sel(time=slice(start_date, end_date))
             if(data[i].time.size == 0):
                 # for any data which has no entries within the specified time
@@ -680,7 +689,7 @@ class Reader:
             print(f'reading {files[0].split("/")[-1]}...')
         data = xr.open_dataset(files[0])[var]
 
-        # ------ do slicing ------
+        # ------ do latitude slicing ------
         if(lat is not None):
             if(type(lat) == float):
                 if(not quiet): print(f'selecting data nearest lat={lat}...')
@@ -700,6 +709,7 @@ class Reader:
             else:
                 raise RuntimeError('arg lat does not match expected input types; please check')
                 
+        # ------ do longitude slicing ------
         if(lon is not None):
             if(type(lon) == float):
                 if(not quiet): print(f'selecting data nearest lon={lat}...')
@@ -718,14 +728,16 @@ class Reader:
             else:
                 raise RuntimeError('arg lon does not match expected input types; please check')
 
+        # ------ do vertical slicing ------
         if(lev is not None):
             if(type(lev) == float or type(lev) == int):
                 plev, zlev = gc_lev_to_p(lev), gc_lev_to_z(lev)
                 if(not quiet): print(f'slicing data on lev={lev} ({plev} hPa // {zlev} km)...')
                 data = data.isel(lev=lev)
             elif(lev == 'XCO2')
-                if(not quiet): print(f'computing XCO2...')
-                data = data.isel(lev=lev)
+                if(not quiet): print(f'computing XCO2 using 3D pressure on interface levels...')
+                pp   = read_gc_meteo(data.time[0], data.time[-1], 'interface_pressure')
+                data = ctb.pressure_weighted_column_mean(data, pp)
 
         # ------ do scaling and return ------
         data = scaling(data)

@@ -7,12 +7,12 @@ import os
 import pandas as pd
 import metpy.constants as const
 
+# ---- constants
+P0              = 1000 # in hPa
+KAPPA           = const.Rd / const.Cp_d
+
 # ---- location of this file, for relative paths
 here = os.path.dirname(os.path.abspath(__file__))
-
-hours_per_month = 24*30
-p0     = 1000 # in hPa
-kappa  = const.Rd / const.Cp_d
 
 valid_components = ['intercept', 'trend', 'residual', 'seasonal', 
                   'sin12_1', 'sin12_2', 'sin12_3', 'cos12_1', 'cos12_2', 'cos12_3']
@@ -36,6 +36,12 @@ tm5_meteo_cache = '/work/noaa/co2/jhollo/TM5_CT2022_gridded_vars'
 gc_meteo_cache  = '/work/noaa/co2/jhollo/GC_MERRA2_gridded_vars'
 
 
-# GC vertical grid definition
+# ---- GC vertical grid definition
+# Note: GC uses a convention where A is defined in hPa; divide by P0
+# to port to the dimensionless convention of CESM
 GC_VERT = pd.read_csv(gc_vert_grid_def, skiprows=1, sep=',',
                       names=['L', 'eta_edge', 'eta_mid', 'alt_km', 'p_hpa', 'Ap', 'Bp'])
+edges   = GC_VERT[GC_VERT['eta_edge'].notna()].reset_index(drop=True)
+GC_HYAI = xr.DataArray(edges['Ap'].values, dims='ilev') / P0
+GC_HYBI = xr.DataArray(edges['Bp'].values, dims='ilev')
+
