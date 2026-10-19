@@ -365,7 +365,7 @@ class WOMBAT_Reader:
         self.quiet     = quiet
 
         # ------ get model-specific settings
-        self.data_dir   = {'GC'gc_transport_dir, 'TM5':tm5_transport_dir}[model]
+        self.data_dir   = {'GC':gc_transport_dir, 'TM5':tm5_transport_dir}[model]
         self.read_meteo = {'GC':read_gc_meteo, 'TM5':read_tm5_meteo}[model]
         
         # ------ set residual flag
@@ -378,31 +378,31 @@ class WOMBAT_Reader:
     # ----------------------------------------------------------------------------------
 
     def read_prior_mf(self, start_date, end_date, region=None,
-                      lev=None, lat=None, lon=None, pft=None):
+                      pft=None, lev=None, lat=None, lon=None):
         kwargs = locals()
         del kwargs['self']
         return self._read_transport_data(**kwargs, data_class='mf')
     
     def read_prior_flux(self, start_date, end_date, region=None,
-                        lev=None, lat=None, lon=None, pft=None):
+                        pft=None, lev=None, lat=None, lon=None):
         kwargs = locals()
         del kwargs['self']
         return self._read_transport_data(**kwargs, data_class='mf')
     
-    def read_posterior_mf(self, start_date, end_date, region=None,
-                          lev=None, lat=None, lon=None, pft=None, sample='mean'):
+    def read_posterior_mf(self, start_date, end_date, sample, obs, 
+                          region=None, pft=None, lev=None, lat=None, lon=None): 
         kwargs = locals()
         del kwargs['self']
         return self._read_transport_data(**kwargs, data_class='mf')
      
-    def read_prior_mf_control(self, start_date, end_date, 
-                              lev=None, lat=None, lon=None, pft=None):
+    def read_prior_mf_control(self, start_date, end_date, pft=None, 
+                              lev=None, lat=None, lon=None):
         kwargs = locals()
         del kwargs['self']
         return self._read_transport_data(**kwargs, data_class='mf', region=None)
     
-    def read_prior_flux_control(self, start_date, end_date
-                                lev=None, lat=None, lon=None, pft=None):
+    def read_prior_flux_control(self, start_date, end_date, pft=None,
+                                lev=None, lat=None, lon=None):
         kwargs = locals()
         del kwargs['self']
         return self._read_transport_data(**kwargs, data_class='flux', region=None)
@@ -411,7 +411,7 @@ class WOMBAT_Reader:
     # ----------------------------------------------------------------------------------
     
     def _read_transport_data(self, start_date, end_date, 
-                             region=None, pft=None, sample=None, obs=None,
+                             sample=None, obs=None, region=None, pft=None,
                              lev=None, lat=None, lon=None, data_class='mf'):
         '''
         Reads and returns mole fraction data for a chosen TransCom region, and 
@@ -446,7 +446,7 @@ class WOMBAT_Reader:
             - "mean": the mean scale factor is used for the prior to posterior scaling.
             - "stats": all scale factor samples 1 to 1000 are used to compute a mean and
                        standard deviation.
-        obs : str, optioal
+        obs : str, optional
             Which observational optimization to read from, in the case that the posterior
             is being read (the arg "sample" was passed). Options are
             'IS', 'LNLG', 'LNLGIS', 'LNLGOGIS'
@@ -485,7 +485,7 @@ class WOMBAT_Reader:
         '''
         
         # TMP
-        if(sample is not None and data_class='flux'):
+        if(sample is not None and data_class == 'flux'):
             raise ValueError('posterior sampling not yet implemented for fluxes :(')
 
         # ------ check return type ------
@@ -501,30 +501,25 @@ class WOMBAT_Reader:
                     raise ValueError('alpha sample must be between 1 and 1000')
             elif(type(sample) == str):
                 if(sample not in ['mean', 'stats']):
-                    raise ValueError('sample option not recognized; must be "mean" or "all" and an integer')
+                    raise ValueError('sample option not recognized; '\
+                                     'must be "mean" or "all" and an integer')
  
         if(not is_yyyy_mm(start_date)):
-            raise ValueError('start_date must be of the form YYY-MM')
+            raise ValueError('start_date must be of the form YYYY-MM')
         if(not is_yyyy_mm(end_date)):
-            raise ValueError('end_date must be of the form YYY-MM')
+            raise ValueError('end_date must be of the form YYYY-MM')
         if(data_class == 'flux' and lev is not None):
             raise ValueError('argument "lev" cannot be specified when data_class="flux"')
  
         # ------ build year list ------
-        self.start_date = np.datetime64(start_date+'-01')
-        self.end_date   = np.datetime64(end_date+'-01')
-        if(self.residual):
-            self.emission_date  = np.datetime64(start_date+'-01')
-            self.emission_year  = int(str(self.start_date)[:10].split('-')[0])
-            self.emission_month = int(str(self.start_date)[:10].split('-')[1])
-        else:
-            self.emission_date  = None
-            self.emission_year  = None
-            self.emission_month = None
-
         self.start_year = int(start_date.split('-')[0])
         self.end_year   = int(end_date.split('-')[0])
         years           = np.arange(self.start_year, self.end_year+1)
+
+        if(self.component == 'residual'):
+            emission_date = start_date
+        else:
+            emission_date = None
         
         # ------ read data per year ------
         prior = [0] * len(years)
@@ -532,8 +527,8 @@ class WOMBAT_Reader:
             if(not self.quiet):
                 print(f'---------- reading data for year {year} ----------')
             
-            prior[i] = self._get_mf_or_flux_for_year(year, region, pft, sample, 
-                                                     lev, lat, lon, data_class)
+            prior[i] = self._get_mf_or_flux_for_year(year, region, pft, lev, lat, lon, 
+                                                     data_class, emission_date=emission_date)
             # ------ slice on time
             prior[i] = prior[i].sel(time=slice(start_date, end_date))
             if(prior[i].time.size == 0):
@@ -545,7 +540,7 @@ class WOMBAT_Reader:
         prior = [p for p in prior if p is not None]
 
         # ------ concatenate ------
-        if(not self.quiet): print(f'concatenating {len(data)} DataArrays')
+        if(not self.quiet): print(f'concatenating {len(prior)} DataArrays')
         prior = xr.concat(prior, dim='time')
         if(sample is None):
             return prior
@@ -553,23 +548,24 @@ class WOMBAT_Reader:
         # ------ scale to posterior if requested ------
         if(sample == 'stats'):
             if(not self.quiet): print(f'scaling prior data to obtain posterior mean and std')
-            alpha = get_posterior_alpha(self.model, self.obs, 'all', self.source, self.component, region, pft)
-            posterior_mean = prior * (1 + np.mean(alpha))
-            posterior_std  = np.std(prior * (1 + alpha))
+            alpha = get_posterior_alpha(self.model, obs, 'all', self.source, 
+                                        self.component, region, pft, emission_date)
+            posterior_mean = (prior * (1 + alpha)).mean('sample')
+            posterior_std  = (prior * (1 + alpha)).std('sample')
             return [posterior_mean, posterior_std]
         else:
-            if(not self.quiet): print(f'scaling prior data to obtain posterior for scale factor sample {sample}')
-            alpha = get_posterior_alpha(self.model, self.obs, sample, self.source, self.component, region, pft)
+            if(not self.quiet): 
+                print(f'scaling prior data to obtain posterior for scale factor sample {sample}')
+            alpha = get_posterior_alpha(self.model, obs, sample, self.source, 
+                                        self.component, region, pft, emission_date)
             posterior = prior * (1 + alpha)
             return posterior
 
-
     # -------------------------------------------------------------------------
     # -------------------------------------------------------------------------
 
-
-    def _get_mf_or_flux_for_year(self, year, region, pft, sample, lev, lat, lon,
-                                 data_class, component=None, quiet=None):
+    def _get_mf_or_flux_for_year(self, year, region, pft, lev, lat, lon, data_class, 
+                                 emission_date=None, component=None, quiet=None):
         '''
         Reads and returns the mole fraction and/or flux data for the specified year.
         For all arguments not described here, see the docstring of _read_transport_data()
@@ -578,6 +574,8 @@ class WOMBAT_Reader:
         ----------
         year : int
             Year in which to read the data.
+        emission_date : str, optional
+            The emission date in YYYY-MM format, for the case that component='residual'.
         component : str, optional
             Optional component to override self.component. Defaults to None.
         quiet : bool, optional
@@ -587,6 +585,14 @@ class WOMBAT_Reader:
         # ------ either take class-level params, or override from args
         if(component is None): component = self.component
         if(quiet is None):     quiet     = self.quiet
+
+        # ------ get emission year and month
+        if(component == 'residual'):
+            if(emission_date is None):
+                raise ValueError('emission_date must be supplied when component=residual')
+            else:
+                emission_year  = emission_date.split('-')[0]
+                emission_month = emission_date.split('-')[1]
         
         # ------ if reading a residual flux, and the year is not the emission year,
         #        then we will instead read the mole fraction, set the values to zero,
@@ -594,7 +600,7 @@ class WOMBAT_Reader:
         #        there can be a continuous flux time series for the residual case.
         set_zero_fluxes = False
         if(component == 'residual' and data_class == 'flux'):
-            if (year!=self.emission_year):
+            if (year!=emission_year):
                 mf = self._get_mf_or_flux_for_year(year, region, lev, lat, lon,
                                                    pft, 'mf', component, True)
                 zero_flux = (mf.isel(lev=0)*0).drop_vars('lev').rename('flux')
@@ -610,50 +616,20 @@ class WOMBAT_Reader:
         if(region is None): control = True
         else:               control = False
 
-        # ------ configure component naming conventions
-        pftstr = ''
-        if(control): comp_names = control_shorthand_comps
-        else:        comp_names = shorthand_comps
-        source = comp_names[self.source]
-
-        if(self.source == 'gpp' or self.source == 'resp'):
-            if(pft is not None): pftstr = f'_pft{pft:02d}'
-            else:                pftstr = '_tmppft'
-
         # ------ configure data directory names
-        sfx = pftstr
-        if(region is not None):
-            sfx = f'{sfx}_regionRegion{region:02d}'
-        if(self.residual):
-            sfx = f'{sfx}_month{self.emission_year:04d}-{self.emission_month:02d}'
-            if(region is None):
-                raise RuntimeError('region must be supplied if component=residual')
-        dirname = f'{source}_{component}{sfx}'
-        dirpath = f'{self.data_dir}/{dirname}'
-
-        # ------ handle recursive PFT calls ------
-        # if a pft was not specified, but the source is gpp or resp, then call this 
-        # function recursively for each avaialble pft, summing the result for final return
-        if(pft is None and 'ocean' not in source):
-            pfts_avail = sorted(glob.glob(f'{self.data_dir}/{dirname.replace(pftstr, "_pft*")}'))
-            pfts_avail = [int(s.split('_pft')[-1].split('_')[0]) for s in pfts_avail]
-            if(not quiet): print(f'reading PFTs {pfts_avail}...')
-            for i,pfti in enumerate(pfts_avail):
-                if(not quiet):
-                    print(f'========== PFT {pfti} ==========')
-                kwargs = {'year':year, 'region':region, 'lev':lev, 'lat':lat, 'lon':lon, 'pft':pfti,
-                          'data_class':data_class, 'sample':sample}
-                if(i==0):
-                    comp_data = self._get_mf_or_flux_for_year(**kwargs)
-                else:
-                    comp_data += self._get_mf_or_flux_for_year(**kwargs) 
-            return format_data(comp_data)
-
+        # if pft=None the source is not the ocean, then use pft=1 as a placeholder to later 
+        # be replaced in the PFT looping procedure
+        if(pft == None and self.source != 'ocean'): tmp_pft = 1 
+        else:                                       tmp_pft = pft
+        datapath = get_data_dir(self.model, self.source, component, 
+                                region=region, emission_date=emission_date, pft=tmp_pft)
+        dirpath, dirname = os.path.split(datapath)
+        
         # ------ handle recursive seasonal calls ------
         # if self.component='seasonal', then call this function recursively for each 
         # sin,cos component, summing the result for final return
         if(component == 'seasonal'):
-            if('ocean' in source):
+            if(self.source == 'ocean'):
                 seasonal_comps = ['sin12_1', 'sin12_2', 'cos12_1', 'cos12_2']
             else:
                 seasonal_comps = ['sin12_1', 'sin12_2', 'sin12_3', 'cos12_1', 'cos12_2', 'cos12_3']
@@ -661,12 +637,37 @@ class WOMBAT_Reader:
                 if(not quiet):
                     print(f'========== seasonal component {seasonal_comps[i]} ==========')
                 kwargs = {'year':year, 'region':region, 'lev':lev, 'lat':lat, 'lon':lon, 'pft':pft,
-                        'component':seasonal_comps[i], 'data_class':data_class, 'sample':sample}
+                          'component':seasonal_comps[i], 'data_class':data_class}
                 if(i==0):
                     comp_data = self._get_mf_or_flux_for_year(**kwargs)
                 else:
                     comp_data += self._get_mf_or_flux_for_year(**kwargs)
             return format_data(comp_data)
+
+        # ------ get available PFTs and verify
+        pfts_avail = get_available_pfts(self.model, self.source, component, 
+                                        region, emission_date=emission_date)
+        if(pft is not None and pft not in pfts_avail):
+            raise ValueError(f'pft={pft} is not available for '\
+                             f'source={self.source}, component={component}, region={region};'\
+                             f'\navailable pfts are {pfts_avail}') 
+
+        # ------ handle recursive PFT calls ------
+        # if a pft was not specified, but the source is gpp or resp, then call this 
+        # function recursively for each avaialble pft, summing the result for final return
+        if(pft is None and self.source != 'ocean'):
+            if(not quiet): print(f'reading PFTs {pfts_avail}...')
+            for i,pfti in enumerate(pfts_avail):
+                if(not quiet):
+                    print(f'========== PFT {pfti} ==========')
+                kwargs = {'year':year, 'region':region, 'lev':lev, 'lat':lat, 'lon':lon, 
+                          'pft':pfti, 'data_class':data_class}
+                if(i==0):
+                    comp_data = self._get_mf_or_flux_for_year(**kwargs)
+                else:
+                    comp_data += self._get_mf_or_flux_for_year(**kwargs) 
+            return format_data(comp_data)
+
                 
         # ------ set parameters for data read ------
         if(data_class == 'mf'):
@@ -679,16 +680,16 @@ class WOMBAT_Reader:
             scaling = lambda x: x * 1e3 * 86400 # convert to g m2/day from kg m2/s
         
         # ------- locate data file -------
-        files = glob.glob(f'{dirpath}/{file_glob}*_{year}.nc4')
+        files = glob.glob(f'{datapath}/{file_glob}_{year}.nc4')
         if(len(files) > 1):
             raise RuntimeError('too many files found! Please debug.')
+        # if no files were found, then this choice of region (and optionally pft) does 
+        # not exist for the choice of source and component; notify user
         if(len(files) < 1):
-            if(len(glob.glob(f'{self.data_dir}/{dirname.replace(pftstr,"*")}')) > 1):
-                if not(quiet):
-                    print(f'pft {pft:02d} does not exist; skipping...')
-            else:
-                raise RuntimeError('no file matching these parameters! Double check that '\
-                                   'specified flux source is nonzero in the specified region')
+            raise RuntimeError('no file matching these parameters! Double check that '\
+                               'specified flux source is nonzero in the specified region;'\
+                               f'\nsource={self.source}, component={component}, '\
+                               f'region={region}, pft={pft}')
 
         # ------ read data ------
         if(not quiet):
@@ -697,7 +698,7 @@ class WOMBAT_Reader:
 
         # ------ do latitude slicing ------
         if(lat is not None):
-            if(type(lat) == float):
+            if(type(lat) == float or type(lat) == int):
                 if(not quiet): print(f'selecting data nearest lat={lat}...')
                 data = data.sel(lat=lat, method='nearest')
             elif(type(lat) == slice):
@@ -707,7 +708,7 @@ class WOMBAT_Reader:
                 if(len(lat)!=2 or sorted(lat)!=lat):
                     raise RuntimeError('if type of lat is a list, then must be ascending and length-2')
                 if(not quiet): print(f'averaging data over lat={lat}...')
-                data = data.sel(lat=slice(lat))
+                data = data.sel(lat=slice(lat[0], lat[1]))
                 data = ctb.meridional_weighted_mean(data)
             elif(lat == 'mean'):
                 if(not quiet): print(f'averaging data over all lat...')
@@ -717,18 +718,18 @@ class WOMBAT_Reader:
                 
         # ------ do longitude slicing ------
         if(lon is not None):
-            if(type(lon) == float):
-                if(not quiet): print(f'selecting data nearest lon={lat}...')
+            if(type(lon) == float or type(lon) == int):
+                if(not quiet): print(f'selecting data nearest lon={lon}...')
                 data = data.sel(lon=lon, method='nearest')
-            if(type(lon) == slice):
+            elif(type(lon) == slice):
                 if(not quiet): print(f'slicing data on lon={lon}...')
                 data = data.sel(lon=lon)
-            if(type(lon) == list):
+            elif(type(lon) == list):
                 if(len(lon)!=2 or sorted(lon)!=lon):
                     raise RuntimeError('if type of lon is a list, then must be ascending and length-2')
                 if(not quiet): print(f'averaging data over lon={lon}...')
-                data = data.sel(lon=slice(lon)).mean('lon')
-            if(lon == 'mean'):
+                data = data.sel(lon=slice(lon[0], lon[1])).mean('lon')
+            elif(lon == 'mean'):
                 if(not quiet): print(f'averaging data over all lon...')
                 data = data.mean('lon')
             else:
@@ -739,12 +740,14 @@ class WOMBAT_Reader:
             if(type(lev) == float or type(lev) == int):
                 #plev, zlev = gc_lev_to_p(lev), gc_lev_to_z(lev)
                 #if(not quiet): print(f'slicing data on lev={lev} ({plev} hPa // {zlev} km)...')
-                if(not quiet): print(f'slicing data on lev={lev}...')
+                if(not quiet): print(f'selecting data nearest lev={lev}...')
                 data = data.isel(lev=lev)
-            elif(lev == 'XCO2')
+            elif(lev == 'XCO2'):
                 if(not quiet): print(f'computing XCO2 using 3D pressure on interface levels...')
-                pp   = self.read_meteo(data.time[0], data.time[-1], 'interface_pressure')
+                pp   = self.read_meteo(data.time.values[0], data.time.values[-1], 'interface_pressure')
                 data = ctb.pressure_weighted_column_mean(data, pp)
+            else:
+                raise RuntimeError('arg lev does not match expected input types; please check')
 
         # ------ do scaling and return ------
         data = scaling(data)

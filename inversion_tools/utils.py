@@ -54,7 +54,7 @@ def arrays_equal(x, y):
 # -------------------------------------------------------------------------
     
 
-def check_inputs(model=None, obs=None, src=None, component=None, region=None, component=None, pft=None):
+def check_inputs(model=None, obs=None, source=None, component=None, region=None, pft=None):
     '''
     Verifies that one or more input arguments is a valid choice for WOMBAT basis functions.
     '''
@@ -63,16 +63,104 @@ def check_inputs(model=None, obs=None, src=None, component=None, region=None, co
         raise ValueError(f'model must be one of {valid_models}, not {model}')
     if(obs is not None and obs not in valid_obs):
         raise ValueError(f'obs must be one of {valid_obs}, not {obs}')
-    if(src is not None and src not in valid_sources):
+    if(source is not None and source not in valid_sources):
         raise ValueError(f'source must be one of {valid_sources}, not {source}')
     if(component is not None and component not in valid_components):
         raise ValueError(f'component must be one of {valid_components}, not {component}')
-    if(region is not None and region not in region):
+    if(region is not None and region not in valid_regions):
         raise ValueError(f'region must be one of {valid_regions}, not {region}')
-    if(component is not None and component not in valid_components):
-        raise ValueError(f'component must be one of {valid_components}, not {component}')
     if(pft is not None and pft not in valid_pfts):
         raise ValueError(f'pft must be one of {valid_pfts}, not {pft}')
+
+
+# -------------------------------------------------------------------------
+
+
+def get_data_dir(model, source, component, region=None, emission_date=None, pft=None):
+    '''
+    Gets the data direcotry name for a basis function
+
+    Parameters
+    ----------
+    model : str
+        The transport model to search. Either 'GC' or 'TM5'
+    source : str
+        The emission source to search. Eiter 'ocean', 'gpp', or 'resp'
+    component : str
+        The component ot search. Must be one of:
+        'intercept', 'trend', 'residual', 'sin12_1', 'sin12_2', 'sin12_3', 
+        'cos12_1', 'cos12_2', 'cos12_3'
+    region : int, optional
+        The emission region to search. Defautls to None, which specifies that
+        the control runs should be searched.
+    emission_date : str, optional
+        The emission date in YYYY-MM format, in the case that component='residual'
+    pft : int, optional
+        The PFT as an int between 1 and 15. 
+
+    Returns
+    -------
+    str
+        The data directory name
+    '''
+
+    # verify inputs
+    check_inputs(model=model, source=source, component=component, region=region, pft=pft)
+    if(component == 'residual'):
+        if(emission_date is None):
+            raise ValueError('emission_date must be supplied when component="residual"')
+        if(not is_yyyy_mm(emission_date)):
+            raise ValueError('emission_date must be supplied in YYYY-MM format')
+
+    # no PFTs for ocean sources
+    if(source == 'ocean' and pft is not None):
+        raise ValueError('PFT must not be supplied when source=ocean')
+
+    # build the data directory name
+    comp_names = {True:control_shorthand_comps, False: shorthand_comps}[region is None]    
+    source_str = comp_names[source]
+
+    sfx = ''
+    if(pft is not None):    sfx = f'_pft{pft:02d}'
+    if(region is not None): sfx = f'{sfx}_regionRegion{region:02d}'
+    if(component == 'residual'):
+        sfx = f'{sfx}_month{emission_date}'
+        if(region is None):
+            raise RuntimeError('region must be supplied if component=residual')
+    dirname = f'{source_str}_{component}{sfx}'
+    
+    # get the data location
+    datadir = {'GC':gc_transport_dir, 'TM5':tm5_transport_dir}[model]
+
+    # return
+    return f'{datadir}/{dirname}'
+
+
+# -------------------------------------------------------------------------
+
+
+def get_available_pfts(model, source, component, region=None, emission_date=None):
+    '''
+    Returns a list of available pfts for a choice of model, source, component, and region.
+    Parameters are identical to get_data_dir(); see docstrings therein.
+
+    Returns
+
+    '''
+
+    # no PFTs for ocean emission sources
+    if(source == 'ocean'):
+        return []
+    
+    # get data directory name and location
+    datapath  = get_data_dir(**locals(), pft=1) # use PFT 1 as a placeholder
+    
+    # find available pfts
+    alldirs    = datapath.replace('_pft01', '_pft*')
+    pfts_avail = sorted(glob.glob(alldirs))
+    pfts_avail = [int(s.split('_pft')[-1].split('_')[0]) for s in pfts_avail]
+
+    return pfts_avail
 
 
 # -------------------------------------------------------------------------
@@ -240,7 +328,8 @@ def gc_p_to_p_interfaces(p):
 # -------------------------------------------------------------------------
 
 
-def get_posterior_alpha(model, obs, sample, source, component, region, pft=None):
+def get_posterior_alpha(model, obs, sample, source, component, region, 
+                        pft=None, emission_date=None):
     '''
     Extracts the WOMBAT posterior alpha scale factor for a choice of observations
     and basis function, and returns either a single sample, the mean, the mean and 
@@ -270,7 +359,10 @@ def get_posterior_alpha(model, obs, sample, source, component, region, pft=None)
         The TransCom region associated with the basis function. Must be an integer 
         between 1 and 22.
     pft : int, optional
-        The PFT associated with teh basis function, in the case that source = 'resp' or 'gpp'
+        The PFT associated with the basis function, in the case that source = 'resp' or 'gpp'
+    emission_date : str, optional
+        The emission date in YYYY-MM format. Required if component = 'residual', ignored
+        otherwise.
 
     Returns
     -------
@@ -279,21 +371,27 @@ def get_posterior_alpha(model, obs, sample, source, component, region, pft=None)
     '''
     
     # ------ check inputs
-    check_inputs(model, obs, src, component, region, component, pft)
+    check_inputs(model, obs, source, component, region, pft)
 
-    if(sample is not None):
-        if(type(sample) == int):
-            if(sample < 1 or sample > 1000):
-                raise ValueError('alpha sample must be between 1 and 1000')
-        elif(type(sample) == str):
-            if(sample not in ['mean', 'all']):
-                raise ValueError('sample option not recognized; must be "mean" or "all" and an integer')
+    if(component=='residual' and emission_date is None):
+        raise ValueError('emission_date must be provided when component="residual"')
+    if(component!='residual' and emission_date is not None):
+        raise ValueError('emission_date should not be provided when component="residual"')
+
+    if(type(sample) == int):
+        if(sample < 1 or sample > 1000):
+            raise ValueError('alpha sample must be between 1 and 1000')
+    elif(type(sample) == str):
+        if(sample not in ['mean', 'all']):
+            raise ValueError('sample option not recognized; must be "mean" or "all" and an integer')
 
     # ------ get basis function name
+    pft_str  = ''
+    date_str = ''
+    if(pft is not None):           pft_str = f'_pft{pft:02d}'
+    if(emission_date is not None): date_str = f'_month{emission_date}'
     source_str     = shorthand_comps[source]
-    pft_str        = [f'_pft{pft:02d}', ''][pft is None]
-    date_str       = [f'_month{start_date}', ''][self.component != 'residual']
-    basis_function = f'{source_str}_{self.component}{pft_str}_regionRegion{region:02d}{date_str}'
+    basis_function = f'{source_str}_{component}{pft_str}_regionRegion{region:02d}{date_str}'
 
     # ------ get row from alpha table
     if(model == 'GC'): alpha_file  = f'{gc_alpha_dir}/state_gc_{obs}.csv'
@@ -310,7 +408,8 @@ def get_posterior_alpha(model, obs, sample, source, component, region, pft=None)
     elif(sample == 'mean'):
         return alpha_row[sample].iloc[0]
     elif(sample == 'all'):
-        return np.array(alpha_row.iloc[0][2:], dtype=float)
+        return xr.DataArray(np.array(alpha_row.iloc[0][2:], dtype='float'), 
+                            coords={'sample':np.arange(1,1001)})
  
 
 # -------------------------------------------------------------------------

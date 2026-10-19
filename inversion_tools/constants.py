@@ -4,6 +4,8 @@
 # Set of constants used in this package
 
 import os
+import numpy as np
+import xarray as xr
 import pandas as pd
 import metpy.constants as const
 
@@ -14,13 +16,13 @@ KAPPA           = const.Rd / const.Cp_d
 # ---- location of this file, for relative paths
 here = os.path.dirname(os.path.abspath(__file__))
 
-valid_components = ['intercept', 'trend', 'residual', 'seasonal', 
-                  'sin12_1', 'sin12_2', 'sin12_3', 'cos12_1', 'cos12_2', 'cos12_3']
+valid_components = ['intercept', 'trend', 'residual', 'sin12_1', 'sin12_2', 
+                    'sin12_3', 'cos12_1', 'cos12_2', 'cos12_3', 'seasonal']
 valid_sources    = ['resp', 'gpp', 'ocean']
 valid_models     = ['GC', 'TM5']
 valid_obs        = ['IS', 'LNLG', 'LNLGIS', 'LNLGOGIS']
-valid_regions    = np.arange(0, 23)
-valid_pfts       = np.arange(0, 15)
+valid_regions    = np.arange(1, 23)
+valid_pfts       = np.arange(1, 16)
 
 # ---- mappings for shorthand component names
 shorthand_comps         = {'gpp':'bio_gpp', 'resp':'bio_resp_tot', 'ocean':'ocean'}
