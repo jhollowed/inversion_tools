@@ -20,191 +20,11 @@ from timeit import default_timer
 import climate_utils.climate_toolbox as ctb
 
 # ---- imports from this package
+from .meteo import *
 from .utils import *
 from .constants import *
 
 # =========================================================================
-
-def read_tm5_meteo(start, end, var, overwrite=False, cache=tm5_meteo_cache):
-    return read_meteo('TM5', start, end, var, overwrite, cache)
-
-def read_gc_meteo(start, end, var, overwrite=False, cache=gc_meteo_cache):
-    return read_meteo('GC', start, end, var, overwrite, cache)
-
-def read_meteo(model, start, end, var, overwrite, cache):
-    '''
-    Temporary function for reading TM5 (CT2022) or GC (MERRA2) gridded 
-    meteorological varaibles
-
-    model : str
-        either 'TM5 or 'GC'
-    start : np.datetime64
-        starting date (year, month, day)
-    end : np.datetime64
-        ending date (year, month, day)
-    var : str
-        name of variable to read. Options are:
-        'pressure', 'theta'
-    cache : str, optional
-        location at which to cache intermediate computations
-    overwrite : bool, optional
-        whether or not to overwrite the existing cached data.
-        Defaults to False, in which case the cached data is
-        returned if it exists.
-    '''
-
-    # ---- check model and var inputs
-    valid_models = ['TM5', 'GC']
-    if(model not in valid_models):
-        raise RuntimeError(f'model must be one of {valid_models}')
-    
-    tm5_valid_vars = ['pressure', 'temperature', 'theta', 'interface_pressure']
-    gc_valid_vars  = ['pressure', 'temperature', 'theta', 'interface_pressure', 'surface_pressure']
-    if(model=='GC' and var not in gc_valid_vars):
-        raise RuntimeError(f'GC var must be one of {valid_vars}')
-    if(model=='TM5' and var not in tm5_valid_vars):
-        raise RuntimeError(f'TM5 var must be one of {valid_vars}')
-
-    if(var == 'theta'):
-        print(f'{model} potential temperature will be computed from pressure and temp...')
-        p = read_meteo(model, start, end, 'pressure', overwrite, cache) / 100 # convert to hPa
-        t = read_meteo(model, start, end, 'temperature', overwrite, cache)
-        print(f'computing potential temperature...')
-        theta = t*(P0/p)**KAPPA
-        theta = theta.rename('potential_temperature')
-        theta.attrs.pop("long_name", None)
-        theta.attrs.pop("standard_name", None)
-        theta.attrs['units']   = 'Kelvin'
-        theta.attrs['comment'] = 'potential temperature at level midpoints'
-        return theta
-
-    print(f'reading {model} {var}...')
-    dates     = np.arange(start, end + np.timedelta64(1, 'D'), dtype='datetime64[D]')
-    all_years = dates.astype('datetime64[Y]').astype(int) + 1970
-    years     = np.unique(all_years)
-    all_data  = [0]*len(years)
-    
-    # TM5 data (CT2022) needs dimensions renamed
-    tm5_horz_coords      = {'latitude':'lat', 'longitude':'lon'}
-    tm5_coords           = {'latitude':'lat', 'longitude':'lon', 'level':'lev'}
-    tm5_interface_coords = {'latitude':'lat', 'longitude':'lon', 'boundary':'ilev'}
-
-    # ------ First get data per requested year
-    # For TM5, this means downloading files from the NOAA server. For GC, we read
-    # from disc on Herules.
-    # The strategy is to compute and cache the requested data for whole years at time,
-    # and only trim to the requested date range (start, end) as a final step.
-    # This allows us to cache variables in one-year intervals
-    for i,year in enumerate(years):
-
-        if(model == 'TM5'):
-            cached = f'{cache}/TM5_CT2022_{year}_daily_{var}.nc'
-        elif(model == 'GC'):
-            cached = f'{cache}/GC_MERRA2_{year}_daily_{var}.nc'
-
-        try:
-            if(overwrite): raise FileNotFoundError
-            year_data = xr.open_dataset(cached)[var]
-            print(f'read {model} daily {var} data for {year}')
-
-        except FileNotFoundError:
-            print(f'daily {model} {var} file for {year} not found')
-            year_data  = []
-            year_dates = dates = np.arange(np.datetime64(f"{year}-01-01"),
-                                           np.datetime64(f"{year + 1}-01-01"),
-                                           np.timedelta64(1, "D"))
-
-            # loop through all dates in this year; download/read, average, concat
-            for j,date in enumerate(year_dates):
-                prog   = f'({j+1}/{len(year_dates)})'
-                iprint(f'{prog} processing date {date}')
-
-                if(model == 'TM5'):
-                    date_str   = str(date.astype('datetime64[D]'))
-                    file       = f'CT2022.molefrac_glb3x2_{date_str}.nc'
-                    downloaded = f'{cache}/daily_raw/{file}'
-                    try:
-                        xr.open_dataset(downloaded)
-                    except FileNotFoundError:
-                        # download from NOAA, trim variables, cache
-                        iprint(f'{prog} downloading data from NOAA...')
-                        urllib.request.urlretrieve(f'{tm5_meteo_url}/{file}', downloaded)
-                        vars_to_save = ['temperature' if v == 'theta' else v for v in valid_vars]
-                        iprint(f'{prog} caching select variables...')
-                        downloaded_vars = xr.open_dataset(downloaded)[vars_to_save]
-                        os.remove(downloaded)
-                        downloaded_vars.to_netcdf(downloaded)
-                
-                elif(model == 'GC'):
-                    _, month, day = str(date).split("-")
-                    file = f'{gc_meteo_dir}/{year}/{month}/MERRA2.{year}{month}{day}.I3.2x25.nc4'
-
-                # grab or compute the requested variable
-                # ------ temperature ------
-                if(var == 'temperature'):
-                    iprint(f'{prog} reading temperature...')
-                    
-                    if(model == 'TM5'):
-                        t = xr.open_dataset(downloaded)['temperature']
-                        t = t.rename(tm5_coords)
-                    
-                    elif(model == 'GC'):
-                        t = xr.open_dataset(file)['T']
-                    
-                    t = t.resample(time="1D").mean()
-                    t = t.rename('temperature')
-                    t.attrs['comment'] = 'temperature at level midpoints'
-                    year_data.append(t)
-
-                # ------ pressure ------
-                elif(var=='pressure' or var=='interface_pressure' or var=='surface_pressure'):
-                    
-                    if(model == 'TM5'):
-                        iprint(f'{prog} reading pressure...')
-                        p = xr.open_dataset(downloaded)[var]
-                        p = p.resample(time="1D").mean()
-                        p = p.rename(tm5_interface_coords)
-                        if(var != 'interface_pressure'):
-                            # move pressure from interface to midpoint levels
-                            p = ctb.level_interfaces_to_midpoints(p)
-
-                    elif(model == 'GC'):
-                        iprint(f'{prog} reading surface pressure...')
-                        # first get daily average of surface presssure
-                        ps = xr.open_dataset(file)['PS']
-                        ps = ps.resample(time="1D").mean()
-                        
-                        # then convert to gridded pressure using the hybrid coefficients A,B
-                        if(var != 'surface_pressure'):
-                            iprint(f'{prog} building 3D pressure...')
-                            if(var == 'interface_pressure'): move_p = False
-                            else:                            move_p = True
-                            p = ctb.compute_hybrid_pressure(ps, GC_HYAI, GC_HYBI, p0=P0*100,
-                                                            move_to_midpoints=move_p)
-                        # remove extraneous attributes
-                        p.attrs.pop("standard_name", None)
-                        p.attrs.pop('gamap_category', None)
-
-                    year_data.append(p)
-
-            # ------ write out this year to nc
-            print('writing out...')
-            year_data = xr.concat(year_data, dim='time')
-            year_data.to_netcdf(cached)
-        all_data[i] = year_data
-
-    # ------ concatenate and trim all years of data
-    print(f'concatenating and trimming data to '\
-          f'({start.astype("datetime64[D]")}, {end.astype("datetime64[D]")})...')
-    if(len(all_data)>1):
-        all_data = xr.concat([d.sel(time=slice(start, end)) for d in all_data], dim='time')
-    else:
-        all_data = all_data[0].sel(time=slice(start, end))
-    return all_data
-
-
-# ----------------------------------------------------------------------------------
-# ----------------------------------------------------------------------------------
 
 
 class WOMBAT_Reader:
@@ -403,49 +223,41 @@ class WOMBAT_Reader:
             emission_date = None
         
         # ------ read data per year ------
-        prior = [0] * len(years)
+        data = [0] * len(years)
         for i,year in enumerate(years):
             if(not self.quiet):
                 print(f'---------- reading data for year {year} ----------')
             
-            prior[i] = self._get_mf_or_flux_for_year(year, region, pft, lev, lat, lon, 
-                                                     data_class, emission_date=emission_date)
+            data[i] = self._get_mf_or_flux_for_year(year, sample, obs, region, pft, lev, lat, lon, 
+                                                    data_class, emission_date=emission_date)
             # ------ slice on time
-            prior[i] = prior[i].sel(time=slice(start_date, end_date))
-            if(prior[i].time.size == 0):
+            data[i] = data[i].sel(time=slice(start_date, end_date))
+            if(data[i].time.size == 0):
                 # for any data which has no entries within the specified time
                 # window, set to zero to flag for removal
-                prior[i] = None
+                data[i] = None
 
         # remove entries for data that could not be read
-        prior = [p for p in prior if p is not None]
+        data = [d for d in data if d is not None]
 
-        # ------ concatenate ------
-        if(not self.quiet): print(f'concatenating {len(prior)} DataArrays')
-        prior = xr.concat(prior, dim='time')
-        if(sample is None):
-            return prior
-        
-        # ------ scale to posterior if requested ------
+        # ------ concatenate and finish ------
+        if(not self.quiet): print(f'concatenating {len(data)} DataArrays')
+        data = xr.concat(data, dim='time')
+
+        # ------ compute posterior mean and std if necessary ------
         if(sample == 'stats'):
-            if(not self.quiet): print(f'scaling prior data to obtain posterior mean and std')
-            alpha = get_posterior_alpha(self.model, obs, 'all', self.source, 
-                                        self.component, region, pft, emission_date)
-            posterior_mean = (prior * (1 + alpha)).mean('sample')
-            posterior_std  = (prior * (1 + alpha)).std('sample')
+            if(not self.quiet):
+                print('finding mean and std of posterior distribution')
+            posterior_mean = data.mean('sample')
+            posterior_std  = data.std('sample')
             return [posterior_mean, posterior_std]
         else:
-            if(not self.quiet): 
-                print(f'scaling prior data to obtain posterior for scale factor sample {sample}')
-            alpha = get_posterior_alpha(self.model, obs, sample, self.source, 
-                                        self.component, region, pft, emission_date)
-            posterior = prior * (1 + alpha)
-            return posterior
-
+            return data
+        
     # -------------------------------------------------------------------------
     # -------------------------------------------------------------------------
 
-    def _get_mf_or_flux_for_year(self, year, region, pft, lev, lat, lon, data_class, 
+    def _get_mf_or_flux_for_year(self, year, sample, obs, region, pft, lev, lat, lon, data_class, 
                                  emission_date=None, component=None, quiet=None):
         '''
         Reads and returns the mole fraction and/or flux data for the specified year.
@@ -462,6 +274,10 @@ class WOMBAT_Reader:
         quiet : bool, optional
             Optional flag to override self.quiet. Defaults to None.
         '''
+       
+        # grab input kwargs to re-use for recursive calls below
+        kwargs = locals().copy()
+        kwargs.pop('self', None)
 
         # ------ either take class-level params, or override from args
         if(component is None): component = self.component
@@ -482,12 +298,12 @@ class WOMBAT_Reader:
         set_zero_fluxes = False
         if(component == 'residual' and data_class == 'flux'):
             if (year!=emission_year):
-                mf = self._get_mf_or_flux_for_year(year, region, lev, lat, lon,
+                mf = self._get_mf_or_flux_for_year(year, sample, obs, region, lev, lat, lon,
                                                    pft, 'mf', component, True)
                 zero_flux = (mf.isel(lev=0)*0).drop_vars('lev').rename('flux')
                 return zero_flux
             else:
-                mf = self._get_mf_or_flux_for_year(year, region, lev, lat, lon, 
+                mf = self._get_mf_or_flux_for_year(year, sample, obs, region, lev, lat, lon, 
                                                    pft, 'mf', component, True)
                 format_data = lambda x: x.reindex_like(mf.isel(lev=0).drop_vars('lev'),fill_value=0)
         else:
@@ -515,10 +331,11 @@ class WOMBAT_Reader:
             else:
                 seasonal_comps = ['sin12_1', 'sin12_2', 'sin12_3', 'cos12_1', 'cos12_2', 'cos12_3']
             for i in range(len(seasonal_comps)):
+                
+                kwargs['component'] = seasonal_comps[i]    # update kwargs
+                
                 if(not quiet):
                     print(f'========== seasonal component {seasonal_comps[i]} ==========')
-                kwargs = {'year':year, 'region':region, 'lev':lev, 'lat':lat, 'lon':lon, 'pft':pft,
-                          'component':seasonal_comps[i], 'data_class':data_class}
                 if(i==0):
                     comp_data = self._get_mf_or_flux_for_year(**kwargs)
                 else:
@@ -539,10 +356,11 @@ class WOMBAT_Reader:
         if(pft is None and self.source != 'ocean'):
             if(not quiet): print(f'reading PFTs {pfts_avail}...')
             for i,pfti in enumerate(pfts_avail):
+                
+                kwargs['pft'] = pfti    #update kwargs
+                
                 if(not quiet):
                     print(f'========== PFT {pfti} ==========')
-                kwargs = {'year':year, 'region':region, 'lev':lev, 'lat':lat, 'lon':lon, 
-                          'pft':pfti, 'data_class':data_class}
                 if(i==0):
                     comp_data = self._get_mf_or_flux_for_year(**kwargs)
                 else:
@@ -572,64 +390,77 @@ class WOMBAT_Reader:
                                f'\nsource={self.source}, component={component}, '\
                                f'region={region}, pft={pft}')
 
-        # ------ read data ------
+        # ------ read prior data ------
         if(not quiet):
             print(f'reading {files[0].split("/")[-1]}...')
-        data = xr.open_dataset(files[0])[var]
+        prior = xr.open_dataset(files[0])[var]
 
         # ------ do latitude slicing ------
         if(lat is not None):
             if(type(lat) == float or type(lat) == int):
-                if(not quiet): print(f'selecting data nearest lat={lat}...')
-                data = data.sel(lat=lat, method='nearest')
+                if(not quiet): print(f'selecting prior data nearest lat={lat}...')
+                prior = prior.sel(lat=lat, method='nearest')
             elif(type(lat) == slice):
-                if(not quiet): print(f'slicing data on lat={lat}...')
-                data = data.sel(lat=lat)
+                if(not quiet): print(f'slicing prior data on lat={lat}...')
+                prior = prior.sel(lat=lat)
             elif(type(lat) == list):
                 if(len(lat)!=2 or sorted(lat)!=lat):
                     raise RuntimeError('if type of lat is a list, then must be ascending and length-2')
-                if(not quiet): print(f'averaging data over lat={lat}...')
-                data = data.sel(lat=slice(lat[0], lat[1]))
-                data = ctb.meridional_weighted_mean(data)
+                if(not quiet): print(f'averaging prior data over lat={lat}...')
+                prior = prior.sel(lat=slice(lat[0], lat[1]))
+                prior = ctb.meridional_weighted_mean(prior)
             elif(lat == 'mean'):
-                if(not quiet): print(f'averaging data over all lat...')
-                data = ctb.meridional_weighted_mean(data)
+                if(not quiet): print(f'averaging prior data over all lat...')
+                prior = ctb.meridional_weighted_mean(prior)
             else:
                 raise RuntimeError('arg lat does not match expected input types; please check')
                 
         # ------ do longitude slicing ------
         if(lon is not None):
             if(type(lon) == float or type(lon) == int):
-                if(not quiet): print(f'selecting data nearest lon={lon}...')
-                data = data.sel(lon=lon, method='nearest')
+                if(not quiet): print(f'selecting prior data nearest lon={lon}...')
+                prior = prior.sel(lon=lon, method='nearest')
             elif(type(lon) == slice):
-                if(not quiet): print(f'slicing data on lon={lon}...')
-                data = data.sel(lon=lon)
+                if(not quiet): print(f'slicing prior data on lon={lon}...')
+                prior = prior.sel(lon=lon)
             elif(type(lon) == list):
                 if(len(lon)!=2 or sorted(lon)!=lon):
                     raise RuntimeError('if type of lon is a list, then must be ascending and length-2')
-                if(not quiet): print(f'averaging data over lon={lon}...')
-                data = data.sel(lon=slice(lon[0], lon[1])).mean('lon')
+                if(not quiet): print(f'averaging prior data over lon={lon}...')
+                prior = prior.sel(lon=slice(lon[0], lon[1])).mean('lon')
             elif(lon == 'mean'):
-                if(not quiet): print(f'averaging data over all lon...')
-                data = data.mean('lon')
+                if(not quiet): print(f'averaging prior data over all lon...')
+                prior = prior.mean('lon')
             else:
                 raise RuntimeError('arg lon does not match expected input types; please check')
 
         # ------ do vertical slicing ------
         if(lev is not None):
             if(type(lev) == float or type(lev) == int):
-                #plev, zlev = gc_lev_to_p(lev), gc_lev_to_z(lev)
-                #if(not quiet): print(f'slicing data on lev={lev} ({plev} hPa // {zlev} km)...')
-                if(not quiet): print(f'selecting data nearest lev={lev}...')
-                data = data.isel(lev=lev)
+                if(not quiet): print(f'selecting prior data nearest lev={lev}...')
+                prior = prior.isel(lev=lev)
             elif(lev == 'XCO2'):
                 if(not quiet): print(f'computing XCO2 using 3D pressure on interface levels...')
-                pp   = self.read_meteo(data.time.values[0], data.time.values[-1], 'interface_pressure')
-                data = ctb.pressure_weighted_column_mean(data, pp)
+                pp    = self.read_meteo(self.model, prior.time.values[0], prior.time.values[-1], 'interface_pressure')
+                prior = ctb.pressure_weighted_column_mean(prior, pp)
             else:
                 raise RuntimeError('arg lev does not match expected input types; please check')
 
-        # ------ do scaling and return ------
-        data = scaling(data)
-        return format_data(data)
+        # ------ do unit scaling ------
+        prior = scaling(prior) 
+
+        # ------ scale to posterior if requested, else return prior ------
+        if(sample is None):
+            return prior
+        
+        if(sample == 'stats'):
+            if(not self.quiet): print(f'scaling prior data to obtain posterior mean and std')
+            alpha = get_posterior_alpha(self.model, obs, 'all', self.source, 
+                                        component, region, pft, emission_date)
+        else:
+            if(not self.quiet): 
+                print(f'scaling prior data to obtain posterior for scale factor sample {sample}')
+            alpha = get_posterior_alpha(self.model, obs, sample, self.source, 
+                                        self.component, region, pft, emission_date)
+        posterior = prior * (1 + alpha)
+        return posterior

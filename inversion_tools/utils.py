@@ -23,8 +23,8 @@ from IPython.display import display, Pretty
 _display_handle = None
 
 # ---- imports from this package
+from .meteo import *
 from .constants import *
-#from .data_io import *
 
 # ---- location of this file, for relative paths
 here = os.path.dirname(os.path.abspath(__file__))
@@ -182,8 +182,7 @@ def tm5_lev_to_p(lev):
     The level pressure, in hPa
     '''
     # get 3D field
-    p = read_meteo('TM5', np.datetime64('2015-01-01'), np.datetime64('2015-12-30'), 'pressure', 
-                   overwrite=False, cache='/work/noaa/co2/jhollo/TM5_CT2022_gridded_vars')
+    p = read_tm5_meteo(np.datetime64('2015-01-01'), np.datetime64('2015-12-30'), 'pressure', overwrite=False)
     # get average
     p = p.sel(lat=45, method='nearest').mean(('time', 'lon')).sel(lev=lev).values
     return p/100
