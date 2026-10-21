@@ -182,7 +182,7 @@ def tm5_lev_to_p(lev):
     The level pressure, in hPa
     '''
     # get 3D field
-    p = read_tm5_meteo(np.datetime64('2015-01-01'), np.datetime64('2015-12-30'), 'pressure', overwrite=False)
+    p = read_tm5_meteo('2015-01-01', '2015-12-30', 'pressure', overwrite=False)
     # get average
     p = p.sel(lat=45, method='nearest').mean(('time', 'lon')).sel(lev=lev).values
     return p/100

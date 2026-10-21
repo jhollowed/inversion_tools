@@ -40,10 +40,10 @@ def read_meteo(model, start, end, var, overwrite, cache):
 
     model : str
         either 'TM5 or 'GC'
-    start : np.datetime64
-        starting date (year, month, day)
-    end : np.datetime64
-        ending date (year, month, day)
+    start : str or datetime64
+        starting date in YYYY-MM-DD format, or as a datetime object
+    end : str or datetime64
+        ending date in YYYY-MM-DD format, or as a datetime object
     var : str
         name of variable to read. Options are:
         'pressure', 'theta'
@@ -66,6 +66,11 @@ def read_meteo(model, start, end, var, overwrite, cache):
         raise RuntimeError(f'GC var must be one of {valid_vars}')
     if(model=='TM5' and var not in tm5_valid_vars):
         raise RuntimeError(f'TM5 var must be one of {valid_vars}')
+
+    if(type(start) == str):
+        start = np.datetime64(start)
+    if(type(end)==str):
+        end   = np.datetime64(end)
 
     if(var == 'theta'):
         print(f'{model} potential temperature will be computed from pressure and temp...')

@@ -18,7 +18,7 @@ here = os.path.dirname(os.path.abspath(__file__))
 
 valid_components = ['intercept', 'trend', 'residual', 'sin12_1', 'sin12_2', 
                     'sin12_3', 'cos12_1', 'cos12_2', 'cos12_3', 'seasonal']
-valid_sources    = ['resp', 'gpp', 'ocean']
+valid_sources    = ['resp', 'gpp', 'ocean', 'nee']
 valid_models     = ['GC', 'TM5']
 valid_obs        = ['IS', 'LNLG', 'LNLGIS', 'LNLGOGIS']
 valid_regions    = np.arange(1, 23)

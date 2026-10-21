@@ -34,7 +34,7 @@ class WOMBAT_Reader:
     Parameters
     ----------
     source : str
-        Either 'ocean', 'gpp', or 'resp'.
+        Either 'ocean', 'gpp', 'resp', or 'nee'
     component : int
         Either 'residual', 'intercept', 'trend', 'seasonal', 
         'sin12_1', 'sin12_2', 'sin12_3', 'cos12_1', 'cos12_2', or 'cos12_3'. 
@@ -136,7 +136,7 @@ class WOMBAT_Reader:
             the control runs are read.
         pft : int, optional
             An integer from 1 to 15 giving the plant functional type. If source is not 
-            "gpp" or "resp", this is ignored. If source is "gpp" or "resp" and "pft" is 
+            terrestrial, this is ignored. If source is terrestrial and "pft" is 
             not supplied, then all pft's will be read and summed. Else, the specified 
             pft is returned.
         sample : int or str, optional
@@ -258,7 +258,7 @@ class WOMBAT_Reader:
     # -------------------------------------------------------------------------
 
     def _get_mf_or_flux_for_year(self, year, sample, obs, region, pft, lev, lat, lon, data_class, 
-                                 emission_date=None, component=None, quiet=None):
+                                 emission_date=None, component=None, source=None, quiet=None):
         '''
         Reads and returns the mole fraction and/or flux data for the specified year.
         For all arguments not described here, see the docstring of _read_transport_data()
@@ -271,11 +271,13 @@ class WOMBAT_Reader:
             The emission date in YYYY-MM format, for the case that component='residual'.
         component : str, optional
             Optional component to override self.component. Defaults to None.
+        source : str, optional
+            Optional source to override self.component. Defaults to None.
         quiet : bool, optional
             Optional flag to override self.quiet. Defaults to None.
         '''
        
-        # grab input kwargs to re-use for recursive calls below
+        # grab input kwargs to re-use for PFT & seasonal recursive calls
         kwargs = locals().copy()
         kwargs.pop('self', None)
 
@@ -318,9 +320,23 @@ class WOMBAT_Reader:
         # be replaced in the PFT looping procedure
         if(pft == None and self.source != 'ocean'): tmp_pft = 1 
         else:                                       tmp_pft = pft
-        datapath = get_data_dir(self.model, self.source, component, 
-                                region=region, emission_date=emission_date, pft=tmp_pft)
+        datapath = get_data_dir(self.model, self.source, component, region=region, 
+                                emission_date=emission_date, pft=tmp_pft)
         dirpath, dirname = os.path.split(datapath)
+        
+        # ------ handle recursive NEE calls ------
+        # if self.source is nee, then call this function recursively for gpp and resp, 
+        # summing the result for final return
+        if(self.source == 'nee'):
+            for i,srci in enumerate(['gpp', 'resp']):
+                
+                kwargs['source'] = srci    #update kwargs
+            
+                if(i==0):
+                    comp_data = self._get_mf_or_flux_for_year(**kwargs)
+                else:
+                    comp_data += self._get_mf_or_flux_for_year(**kwargs) 
+            return format_data(comp_data)
         
         # ------ handle recursive seasonal calls ------
         # if self.component='seasonal', then call this function recursively for each 
@@ -351,7 +367,7 @@ class WOMBAT_Reader:
                              f'\navailable pfts are {pfts_avail}') 
 
         # ------ handle recursive PFT calls ------
-        # if a pft was not specified, but the source is gpp or resp, then call this 
+        # if a pft was not specified, but the source is terrestrial, then call this 
         # function recursively for each avaialble pft, summing the result for final return
         if(pft is None and self.source != 'ocean'):
             if(not quiet): print(f'reading PFTs {pfts_avail}...')
@@ -366,8 +382,7 @@ class WOMBAT_Reader:
                 else:
                     comp_data += self._get_mf_or_flux_for_year(**kwargs) 
             return format_data(comp_data)
-
-                
+         
         # ------ set parameters for data read ------
         if(data_class == 'mf'):
             file_glob = 'daily-mole-fraction*'
