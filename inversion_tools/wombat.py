@@ -283,6 +283,7 @@ class WOMBAT_Reader:
 
         # ------ either take class-level params, or override from args
         if(component is None): component = self.component
+        if(source is None):    source    = self.source
         if(quiet is None):     quiet     = self.quiet
 
         # ------ get emission year and month
@@ -314,22 +315,12 @@ class WOMBAT_Reader:
         # ------ set flag for reading control runs
         if(region is None): control = True
         else:               control = False
-
-        # ------ configure data directory names
-        # if pft=None the source is not the ocean, then use pft=1 as a placeholder to later 
-        # be replaced in the PFT looping procedure
-        if(pft == None and self.source != 'ocean'): tmp_pft = 1 
-        else:                                       tmp_pft = pft
-        datapath = get_data_dir(self.model, self.source, component, region=region, 
-                                emission_date=emission_date, pft=tmp_pft)
-        dirpath, dirname = os.path.split(datapath)
         
         # ------ handle recursive NEE calls ------
         # if self.source is nee, then call this function recursively for gpp and resp, 
         # summing the result for final return
-        if(self.source == 'nee'):
+        if(source == 'nee'):
             for i,srci in enumerate(['gpp', 'resp']):
-                
                 kwargs['source'] = srci    #update kwargs
             
                 if(i==0):
@@ -342,12 +333,11 @@ class WOMBAT_Reader:
         # if self.component='seasonal', then call this function recursively for each 
         # sin,cos component, summing the result for final return
         if(component == 'seasonal'):
-            if(self.source == 'ocean'):
+            if(source == 'ocean'):
                 seasonal_comps = ['sin12_1', 'sin12_2', 'cos12_1', 'cos12_2']
             else:
                 seasonal_comps = ['sin12_1', 'sin12_2', 'sin12_3', 'cos12_1', 'cos12_2', 'cos12_3']
-            for i in range(len(seasonal_comps)):
-                
+            for i in range(len(seasonal_comps)):         
                 kwargs['component'] = seasonal_comps[i]    # update kwargs
                 
                 if(not quiet):
@@ -358,18 +348,27 @@ class WOMBAT_Reader:
                     comp_data += self._get_mf_or_flux_for_year(**kwargs)
             return format_data(comp_data)
 
+        # ------ configure data directory names
+        # if pft=None the source is not the ocean, then use pft=1 as a placeholder to later 
+        # be replaced in the PFT looping procedure
+        if(pft == None and source != 'ocean'): tmp_pft = 1 
+        else:                                       tmp_pft = pft
+        datapath = get_data_dir(self.model, source, component, region=region, 
+                                emission_date=emission_date, pft=tmp_pft)
+        dirpath, dirname = os.path.split(datapath)
+         
         # ------ get available PFTs and verify
-        pfts_avail = get_available_pfts(self.model, self.source, component, 
+        pfts_avail = get_available_pfts(self.model, source, component, 
                                         region, emission_date=emission_date)
         if(pft is not None and pft not in pfts_avail):
             raise ValueError(f'pft={pft} is not available for '\
-                             f'source={self.source}, component={component}, region={region};'\
+                             f'source={source}, component={component}, region={region};'\
                              f'\navailable pfts are {pfts_avail}') 
 
         # ------ handle recursive PFT calls ------
         # if a pft was not specified, but the source is terrestrial, then call this 
         # function recursively for each avaialble pft, summing the result for final return
-        if(pft is None and self.source != 'ocean'):
+        if(pft is None and source != 'ocean'):
             if(not quiet): print(f'reading PFTs {pfts_avail}...')
             for i,pfti in enumerate(pfts_avail):
                 
@@ -402,7 +401,7 @@ class WOMBAT_Reader:
         if(len(files) < 1):
             raise RuntimeError('no file matching these parameters! Double check that '\
                                'specified flux source is nonzero in the specified region;'\
-                               f'\nsource={self.source}, component={component}, '\
+                               f'\nsource={source}, component={component}, '\
                                f'region={region}, pft={pft}')
 
         # ------ read prior data ------
@@ -470,12 +469,12 @@ class WOMBAT_Reader:
         
         if(sample == 'stats'):
             if(not self.quiet): print(f'scaling prior data to obtain posterior mean and std')
-            alpha = get_posterior_alpha(self.model, obs, 'all', self.source, 
+            alpha = get_posterior_alpha(self.model, obs, 'all', source, 
                                         component, region, pft, emission_date)
         else:
             if(not self.quiet): 
                 print(f'scaling prior data to obtain posterior for scale factor sample {sample}')
-            alpha = get_posterior_alpha(self.model, obs, sample, self.source, 
+            alpha = get_posterior_alpha(self.model, obs, sample, source, 
                                         self.component, region, pft, emission_date)
         posterior = prior * (1 + alpha)
         return posterior
