@@ -10,6 +10,7 @@ import re
 import os
 import pdb
 import glob
+import fnmatch
 import warnings
 import numpy as np
 import pandas as pd
@@ -139,13 +140,15 @@ def get_data_dir(model, source, component, region=None, emission_date=None, pft=
 # -------------------------------------------------------------------------
 
 
-def get_available_pfts(model, source, component, region=None, emission_date=None):
+def get_available_prior_pfts(model, source, component, region=None, emission_date=None):
     '''
-    Returns a list of available pfts for a choice of model, source, component, and region.
-    Parameters are identical to get_data_dir(); see docstrings therein.
+    Returns a list of available prior pfts for a choice of model, source, component, 
+    and region. Parameters are identical to get_data_dir(); see docstrings therein.
 
     Returns
-
+    -------
+    list
+        available pfts as integers
     '''
 
     # no PFTs for ocean emission sources
@@ -159,6 +162,47 @@ def get_available_pfts(model, source, component, region=None, emission_date=None
     alldirs    = datapath.replace('_pft01', '_pft*')
     pfts_avail = sorted(glob.glob(alldirs))
     pfts_avail = [int(s.split('_pft')[-1].split('_')[0]) for s in pfts_avail]
+    pfts_avail = sorted(np.unique(pfts_avail).tolist())
+
+    return pfts_avail
+
+
+# -------------------------------------------------------------------------
+
+
+def get_available_posterior_pfts(model, source, component, obs, region=None, emission_date=None):
+    '''
+    Returns a list of available posterior pfts for a choice of model, source, component, 
+    region, and observational dataset.
+    Other than obs, parameters are identical to get_data_dir(); see docstrings therein.
+    obs must be 'IS', 'LNLG', 'LNLGIS', or 'LNLGOGIS'
+
+    Returns
+    -------
+    list
+        available pfts as integers
+    '''
+
+    # no PFTs for ocean emission sources
+    if(source == 'ocean'):
+        return []
+    
+    # ------ get basis function name
+    date_str = ''
+    if(emission_date is not None): 
+        date_str = f'_month{emission_date}'
+    source_str     = shorthand_comps[source]
+    basis_function = f'{source_str}_{component}*_regionRegion{region:02d}{date_str}'
+
+    # ------ get row from alpha table
+    if(model == 'GC'):  alpha_file  = f'{gc_alpha_dir}/state_gc_{obs}.csv'
+    if(model == 'TM5'): alpha_file = f'{tm5_alpha_dir}/state_tm5_{obs}.csv'
+    alpha_table = pd.read_csv(alpha_file)
+
+    mask = alpha_table['basis_function'].apply(lambda x: fnmatch.fnmatchcase(x, basis_function))
+    rows = alpha_table[mask]['basis_function'].tolist()
+    pfts_avail = [int(row.split('pft')[-1].split('_')[0]) for row in rows]
+    pfts_avail = sorted(np.unique(pfts_avail).tolist())
 
     return pfts_avail
 
@@ -396,12 +440,11 @@ def get_posterior_alpha(model, obs, sample, source, component, region,
     if(model == 'GC'): alpha_file  = f'{gc_alpha_dir}/state_gc_{obs}.csv'
     if(model == 'TM5'): alpha_file = f'{tm5_alpha_dir}/state_tm5_{obs}.csv'
     alpha_table = pd.read_csv(alpha_file)
+    if(not basis_function in alpha_table['basis_function'].tolist()):
+        raise RuntimeError(f'basis function {basis_function} not found in alpha table; please debug!')
     alpha_row   = alpha_table[alpha_table['basis_function'] == basis_function]
 
     # ------- extract requested sample and return
-    if(type(sample) == int): sample_str = f'sample{sample:04d}'
-    else:                    sample_str = sample
- 
     if(type(sample) == int):
         return alpha_row[f'sample{sample:04d}'].iloc[0]
     elif(sample == 'mean'):

@@ -358,8 +358,12 @@ class WOMBAT_Reader:
         dirpath, dirname = os.path.split(datapath)
          
         # ------ get available PFTs and verify
-        pfts_avail = get_available_pfts(self.model, source, component, 
-                                        region, emission_date=emission_date)
+        if(sample is None): 
+            pfts_avail = get_available_prior_pfts(self.model, source, component, region,
+                                                  emission_date=emission_date)
+        else:               
+            pfts_avail = get_available_posterior_pfts(self.model, source, component, obs, region,
+                                                      emission_date=emission_date)
         if(pft is not None and pft not in pfts_avail):
             raise ValueError(f'pft={pft} is not available for '\
                              f'source={source}, component={component}, region={region};'\
@@ -455,7 +459,8 @@ class WOMBAT_Reader:
                 prior = prior.isel(lev=lev)
             elif(lev == 'XCO2'):
                 if(not quiet): print(f'computing XCO2 using 3D pressure on interface levels...')
-                pp    = self.read_meteo(self.model, prior.time.values[0], prior.time.values[-1], 'interface_pressure')
+                pp    = self.read_meteo(self.model, prior.time.values[0], 
+                                                    prior.time.values[-1], 'interface_pressure')
                 prior = ctb.pressure_weighted_column_mean(prior, pp)
             else:
                 raise RuntimeError('arg lev does not match expected input types; please check')
@@ -466,7 +471,7 @@ class WOMBAT_Reader:
         # ------ scale to posterior if requested, else return prior ------
         if(sample is None):
             return prior
-        
+
         if(sample == 'stats'):
             if(not self.quiet): print(f'scaling prior data to obtain posterior mean and std')
             alpha = get_posterior_alpha(self.model, obs, 'all', source, 
